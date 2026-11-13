@@ -102,4 +102,4 @@ Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0
 | RHEL 10 DVD ISO (kickstart) + activation key: Prisma from `--rpm` | pass | 4.0 GB | Prisma 157.19; protection service active, SELinux enforcing |
 | Fedora 43 downloaded and GPG-verified: Firefox | pass | 2.2 GB | Firefox 159 |
 
-Prisma Access Browser's window was shown on the desktop through this same mechanism, on both Fedora and RHEL guests. The other browsers were checked with `--version`; opening their windows hasn't been tested yet.
+Windows opened on the desktop for Prisma Access Browser (Fedora and RHEL guests) and Google Chrome (Fedora guest). Chrome felt somewhat slower than a native browser because it renders on the VM's CPU. Chromium, Brave and Firefox were checked with `--version`.
