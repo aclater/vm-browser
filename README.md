@@ -92,12 +92,14 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 
 ## Status
 
-Tested on a Fedora 45 desktop. Results:
+Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0.11). Every scenario completed unattended. Each launcher's command was then run as the `browser` user over its own SSH settings.
 
-| Scenario | Result |
-|---|---|
-| Fedora 44 cloud image: Chrome, Chromium, Brave, Firefox, Prisma | testing |
-| RHEL 10 KVM image + activation key: Firefox, Chromium (EPEL) | testing |
-| Fedora 44 Server DVD ISO (kickstart): Firefox | testing |
-| RHEL 10 DVD ISO (kickstart) + activation key: Prisma from `--rpm` | testing |
-| Fedora 43 downloaded and GPG-verified: Firefox | testing |
+| Scenario | Result | Disk file | Browser versions |
+|---|---|---|---|
+| Fedora 44 cloud image: Chrome, Chromium, Brave, Firefox, Prisma | pass | 4.5 GB | Chrome 157, Chromium 156, Brave 1.99, Firefox 160, Prisma 157.19 |
+| RHEL 10 KVM image + activation key: Firefox, Chromium (EPEL) | pass | 4.3 GB | Firefox 153 ESR, Chromium 156 |
+| Fedora 44 Server DVD ISO (kickstart): Firefox | pass | 2.5 GB | Firefox 160 |
+| RHEL 10 DVD ISO (kickstart) + activation key: Prisma from `--rpm` | pass | 4.0 GB | Prisma 157.19; protection service active, SELinux enforcing |
+| Fedora 43 downloaded and GPG-verified: Firefox | pass | 2.2 GB | Firefox 159 |
+
+Prisma Access Browser's window was shown on the desktop through this same mechanism, on both Fedora and RHEL guests. The other browsers were checked with `--version`; opening their windows hasn't been tested yet.
