@@ -347,7 +347,9 @@ EOF
 # the base. While one runs, launchers refuse to start.
 is_disposable() { [ -f "$DIR/base.qcow2" ]; }
 # fresh_overlay: replaces disk.qcow2 by an empty overlay on the base. The VM must be shut off.
+# A saved memory state (virsh managedsave) is dropped too: it belongs to the old overlay.
 fresh_overlay() {
+  virsh managedsave-remove "$NAME" >/dev/null 2>&1 || true
   qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/base.qcow2" "$DIR/disk.qcow2.new" \
     && mv -f "$DIR/disk.qcow2.new" "$DIR/disk.qcow2"
 }
@@ -677,6 +679,7 @@ mkdir -p -m 700 "$BASE" "$RUN"
 # overlay is replaced again when it stops, so nothing from a session is kept.
 fresh() {
   [ -f "$DIR/base.qcow2" ] || return 0
+  virsh managedsave-remove "$VM" >/dev/null 2>&1   # a saved memory state belongs to the old overlay
   qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/base.qcow2" "$DIR/disk.qcow2.new" && mv -f "$DIR/disk.qcow2.new" "$DIR/disk.qcow2"
 }
 start_vm() {   # with the lock held

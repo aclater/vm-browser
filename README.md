@@ -141,7 +141,7 @@ On GitHub's runner (Fedora 44 container with KVM), `tests/e2e.sh` makes the e2e 
 - that a script run refuses while the VM runs, and that its changes reach later sessions;
 - `--update` and `--persistent`.
 
-Result: pass. `tests/run.sh` has 19 unit checks for the overlay and maintenance logic.
+Result: pass. `tests/run.sh` has 20 unit checks for the overlay and maintenance logic.
 
 ### Security changes, tested 2026-11-14
 
@@ -153,7 +153,7 @@ Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.
 - that a hostile RPM gets no launcher;
 - the shutdown after the last window closes, and the restart.
 
-`tests/run.sh` runs 141 unit checks that need no VM.
+`tests/run.sh` runs 142 unit checks that need no VM.
 
 | Scenario | Where | Result |
 |---|---|---|

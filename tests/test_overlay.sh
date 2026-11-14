@@ -33,6 +33,8 @@ export -f dl line
 
 check "a disposable VM starts on a new overlay on its base" \
   bash -c 'dl "shut off" && grep -qx -- "$T/home/base.qcow2" "$T/calls" && c=$(line create) && s=$(line start) && [ "$c" -gt 0 ] && [ "$s" -gt "$c" ]'
+check "...and drops a saved memory state of the old session first" \
+  bash -c 'dl "shut off" && r=$(line managedsave-remove) && [ "$r" -gt 0 ] && [ "$r" -lt "$(line create)" ]'
 check "a persistent VM's launcher makes no overlay" \
   bash -c 'launcher_for /usr/bin/firefox && echo "shut off" > "$T/vstate" && rm -f "$T/calls" && PATH="$T/dstubs:$PATH" XDG_RUNTIME_DIR="$T/drun" "$T/home/.local/bin/vmb-testvm-testpkg" && ! grep -qx qemu-img "$T/calls" && grep -qx start "$T/calls"'
 check "a VM that is already running gets no new overlay at the start" \
