@@ -187,7 +187,10 @@ install_from_iso() {
   isoinfo -R -i "$IMAGE" -x /images/pxeboot/initrd.img > "$DIR/initrd.img"
   [ -s "$DIR/vmlinuz" ] && [ -s "$DIR/initrd.img" ] || die "no installer kernel in $IMAGE"
   if isoinfo -R -f -i "$IMAGE" | grep -qE '^/(BaseOS/repodata|repodata|Packages)$'; then src="cdrom"
-  elif [ "$OS" = fedora ]; then src="url --mirrorlist=https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-$VER&arch=x86_64"
+  elif [ "$OS" = fedora ]; then
+    # A metalink, not a mirrorlist: it comes over TLS from Fedora and carries the hash of the
+    # repository metadata, which in turn hashes every package, so a mirror can't swap packages.
+    src="url --metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$VER&arch=x86_64"
   else
     [ -n "$RHSM" ] || die "this RHEL boot ISO has no packages; pass --rhsm so the installer can use the Red Hat CDN"
     src="rhsm --organization=$(sed -n 's/^org=//p' "$RHSM") --activation-key=$(sed -n 's/^key=//p' "$RHSM")"
