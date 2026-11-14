@@ -67,8 +67,8 @@ setup() {
   # Separate keys for the admin account (sudo) and the browser account the launchers use, and
   # the VM's own SSH host key, made here so known_hosts is pinned before the VM first boots.
   KEYF="$DIR/id_ed25519"; BKEYF="$DIR/browser_ed25519"; HKEYF="$DIR/ssh_host_ed25519_key"; KH="$DIR/known_hosts"
-  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg; do
-    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2"
+  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg ip; do
+    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute"
   done
 }
 

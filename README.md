@@ -42,7 +42,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 - **Desktop:** Fedora (or similar) running Wayland, with KVM.
 - **Host packages:**
   ```bash
-  sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2
+  sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute
   ```
 - **RHEL guests** also need a Red Hat account: an [activation key and org ID](https://console.redhat.com/insights/connector/activation-keys), plus the RHEL KVM guest image or DVD ISO from [access.redhat.com](https://access.redhat.com/downloads). 
 
