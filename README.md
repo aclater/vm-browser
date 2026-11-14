@@ -50,11 +50,14 @@ your desktop (Wayland)                             VM (libvirt user session)
 ## Usage
 
 ```bash
-# Fedora 44 (downloaded and GPG-verified automatically) with Firefox and Chrome
-./vm-browser.sh firefox chrome
+# Fedora 44 (downloaded and GPG-verified automatically) with Firefox and Chrome, in a VM named "personal"
+./vm-browser.sh --name personal firefox chrome
 
 # Add Brave to the same VM later
-./vm-browser.sh brave
+./vm-browser.sh --name personal brave
+
+# Work browsing in its own VM
+./vm-browser.sh --name work prisma
 
 # RHEL 10 from the KVM guest image, registered with an activation key
 printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chmod 600 ~/.config/rhsm-activation
@@ -66,9 +69,9 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 # A browser from a local RPM
 ./vm-browser.sh --rpm ~/Downloads/some-browser.x86_64.rpm
 
-# Prisma Access Browser
-./vm-browser.sh prisma
 ```
+
+**Use one VM per trust level.** All browsers in a VM run as the same `browser` user, so a browser that gets compromised can read the other browsers' profiles, cookies and signed-in sessions. Keep work browsing (for example Prisma Access Browser and its corporate sessions) and personal browsing in separate VMs with `--name`. The script warns when Prisma Access Browser and other browsers would share a VM.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -109,7 +112,30 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 
 ## Status
 
-Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0.11). Every scenario completed unattended. Each launcher's command was then run as the `browser` user over its own SSH settings.
+### Security changes, tested 2026-11-14
+
+Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.11.2), and on GitHub's runner (Fedora 44 container with KVM, headless Sway). `tests/e2e.sh` builds a VM, then checks:
+
+- the launcher and the unprivileged `browser` login;
+- the network guard: the desktop's loopback, the LAN, and the desktop's other addresses even with `--lan`, each with a control that the address opens without the guard;
+- the pinned host key and the separate keys;
+- that a hostile RPM gets no launcher;
+- the shutdown after the last window closes, and the restart.
+
+`tests/run.sh` runs 122 unit checks that need no VM.
+
+| Scenario | Where | Result |
+|---|---|---|
+| Fedora 44 cloud image, downloaded and verified against the pinned key: Firefox, all e2e checks, LAN checks against a NAS and the desktop's libvirt bridge | desktop | pass |
+| The same, plus a hostile `~/.ssh/config` and Firefox opened through the launcher on a headless Sway (window seen with security context `vm-browser.<vm>`) | GitHub runner | pass |
+| RHEL 10.2 boot ISO with activation key (kickstart): Firefox 153 ESR, all e2e checks, and the activation key found nowhere in the VM | desktop | pass |
+| Fedora 45 netinstall ISO (metalink): Firefox. 447 of 448 installed packages are signed by the Fedora 45 key; the other is the key itself | desktop | pass |
+| GNOME 51: the launcher's probe finds no `wp_security_context_v1`, and waypipe runs without `--secctx` | desktop | pass |
+| Fedora 44: Chrome 157, Chromium 156 and Brave 1.99 in one VM, Prisma Access Browser 157.19 in its own. Launchers built from each package (name, icon, window class), each browser started through its launcher. Run before the review fixes | desktop | pass |
+
+### Browsers, tested 2026-11-13
+
+Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0.11). Every scenario completed unattended. Each launcher's command was then run as the `browser` user over its own SSH settings. These runs predate the security changes above.
 
 | Scenario | Result | Disk file | Browser versions |
 |---|---|---|---|

@@ -22,3 +22,12 @@ for bad in "--name ../x" "--name a/b" "--name a.b" "--name -x" "--name x'y" "--n
 done
 check "accepted: --name work-1 --port 2240 --memory 8 --cpus 2 --disk 20G --version 43" \
   bash -c 'source ./vm-browser.sh; parse_args --name work-1 --port 2240 --memory 8 --cpus 2 --disk 20G --version 43 firefox'
+
+# One VM per trust level (#4): a warning when Prisma and other browsers share a VM.
+mix() { bash -c 'source ./vm-browser.sh; DIR=$T/mix; mkdir -p "$DIR"; rm -f "$DIR/browsers"; [ -z "$1" ] || printf "%s\n" $1 > "$DIR/browsers"; shift; parse_args "$@"; warn_mixing 2>&1' _ "$@"; }
+export -f mix
+check "warns when Prisma joins a VM with Firefox" bash -c 'mix firefox prisma | grep -q WARNING'
+check "warns when Firefox joins a VM with Prisma" bash -c 'mix prisma-access-browser-stable firefox | grep -q WARNING'
+check "warns when both are asked for at once" bash -c 'mix "" prisma chrome | grep -q WARNING'
+check "no warning for Prisma alone" bash -c '[ -z "$(mix "" prisma)" ]'
+check "no warning for personal browsers together" bash -c '[ -z "$(mix firefox chrome brave)" ]'

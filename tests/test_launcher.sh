@@ -24,7 +24,7 @@ launcher_for() {
   rm -rf "${T:?}/home" "${T:?}/calls"; mkdir -p "$T/home"
   HOME=$T/home bash -c '
     source ./vm-browser.sh
-    NAME=${4:-testvm} KEYF=$T/key BKEYF=$T/bkey KH=$T/kh PORT=2299 R_EXE=$1 R_NAME=${2:-Test Browser} R_WM=${3:-}
+    NAME=${4:-testvm} DIR=$T/home KEYF=$T/key BKEYF=$T/bkey KH=$T/kh PORT=2299 R_EXE=$1 R_NAME=${2:-Test Browser} R_WM=${3:-}
     vmsh() { cat >/dev/null; printf "%s\n%s\n\n%s\n" "$R_NAME" "$R_EXE" "$R_WM"; }
     make_launcher testpkg' _ "$@"
 }
