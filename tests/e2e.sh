@@ -146,13 +146,13 @@ fi
 
 # #9: when the last launcher closes, the VM shuts down; the next launch starts it again, and
 # the network guard is back after that boot. "firefox --version" opens no window.
-# launch ARGS: the launcher (traced), limited to 5 minutes. A watchdog prints the process tree
-# and the trace if it is still running after 6 minutes, whatever is holding it up.
+# launch ARGS: the launcher (traced), limited to 5 minutes. A watchdog prints the trace and the
+# process tree every minute while it runs, whatever is holding it up.
 launch() {
   local out rc dog; out=$(mktemp)
   echo "E2E step: launcher $* ($(date -u +%T))" >&2
-  ( sleep 360; echo "--- watchdog: still running after 6 minutes; trace so far:" >&2; tail -40 "$out" >&2
-    echo "--- processes:" >&2; ps -eo pid,ppid,stat,etime,args --forest >&2 ) & dog=$!
+  ( for m in 1 2 3 4; do sleep 60; echo "--- watchdog: launcher still running after $m min; trace so far:" >&2
+      tail -15 "$out" >&2; echo "--- processes:" >&2; ps -eo pid,ppid,stat,etime,args --forest >&2; done ) & dog=$!
   timeout -k 10 300 bash -x "$L" "$@" > "$out" 2>&1; rc=$?
   kill "$dog" 2>/dev/null || true
   if [ $rc != 0 ]; then echo "--- launcher exit $rc; last of its trace:" >&2; tail -40 "$out" >&2; fi
