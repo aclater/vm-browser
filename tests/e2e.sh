@@ -8,7 +8,9 @@ cd "$(dirname "$0")/.."
 NAME=${E2E_NAME:-vmb-e2e-$$}
 export LIBVIRT_DEFAULT_URI=qemu:///session
 D="$HOME/.local/share/vm-browser/$NAME"
+sway_pid=""
 cleanup() {
+  [ -z "$sway_pid" ] || kill "$sway_pid" 2>/dev/null || true
   # A RHEL VM is unregistered first, so it doesn't stay listed in the Red Hat account.
   if [ -f "$D/id_ed25519" ] && [ -f "$D/port" ]; then
     ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
@@ -71,7 +73,7 @@ if [ -n "${E2E_SWAY:-}" ]; then
     sleep 2
   done
   swaymsg -t get_tree 2>/dev/null | grep -E '"(app_id|sandbox_engine|sandbox_app_id)"' | sort -u || true
-  kill "$launcher_pid" 2>/dev/null || true; kill "$sway_pid" 2>/dev/null || true
+  kill "$launcher_pid" 2>/dev/null || true   # Sway keeps running for the launches below
   [ -n "$found" ] || { tail -20 "$XDG_RUNTIME_DIR/launcher.log" "$XDG_RUNTIME_DIR/sway.log" >&2; fail "no window with the VM's security context"; }
   pass "the browser's window reaches the compositor through waypipe, with the security context vm-browser.$NAME"
 fi
@@ -168,3 +170,27 @@ SPEC
   rm -rf "$R"
   pass "an RPM whose .desktop Exec has shell code gets no launcher"
 fi
+
+# #9: when the last launcher closes, the VM shuts down; the next launch starts it again, and
+# the network guard is back after that boot. "firefox --version" opens no window.
+# launch ARGS: the launcher (traced), limited to 5 minutes. A watchdog prints the trace and the
+# process tree every minute while it runs, whatever is holding it up.
+launch() {
+  local out rc dog; out=$(mktemp)
+  echo "E2E step: launcher $* ($(date -u +%T))" >&2
+  ( for m in 1 2 3 4; do sleep 60; echo "--- watchdog: launcher still running after $m min; trace so far:" >&2
+      tail -15 "$out" >&2; echo "--- processes:" >&2; ps -eo pid,ppid,stat,etime,args --forest >&2; done ) & dog=$!
+  timeout -k 10 300 bash -x "$L" "$@" > "$out" 2>&1; rc=$?
+  kill "$dog" 2>/dev/null || true
+  if [ $rc != 0 ]; then echo "--- launcher exit $rc; last of its trace:" >&2; tail -40 "$out" >&2; fi
+  grep -v '^+' "$out"; rm -f "$out"; return $rc
+}
+launch --version >/dev/null || fail "the launcher could not run firefox --version"
+for _ in $(seq 1 60); do [ "$(virsh domstate "$NAME")" = "shut off" ] && break; sleep 3; done
+[ "$(virsh domstate "$NAME")" = "shut off" ] || fail "the VM is still running after its last launcher closed"
+pass "the VM shut down after its last launcher closed"
+launch --version | grep -q 'Mozilla Firefox' || fail "the launcher did not start the VM again"
+VMB_KEEP_RUNNING=1 launch --version >/dev/null || true
+ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" \
+  -p "$(cat "$D/port")" admin@127.0.0.1 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
+pass "the launcher starts the VM again; the network guard is loaded at boot"

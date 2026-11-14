@@ -551,11 +551,24 @@ write_launcher() {
     cat <<'LAUNCHER'
 export LIBVIRT_DEFAULT_URI=qemu:///session
 SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
+# One session file per open launcher, so the VM can be stopped when the last one closes.
+BASE="${XDG_RUNTIME_DIR:-/tmp/vm-browser-$(id -u)}"; RUN="$BASE/vm-browser-$VM"
+mkdir -p -m 700 "$BASE" "$RUN"
+# Only folders of our own: in /tmp another user could have made them first.
+[ -O "$BASE" ] && [ -O "$RUN" ] && [ ! -L "$BASE" ] && [ ! -L "$RUN" ] || { echo "vm-browser: $RUN is not ours" >&2; exit 1; }
+exec 9>"$RUN/lock"
+flock -w 120 9; touch "$RUN/session.$$"
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
+flock -u 9
 # Wait for the VM, and for its network guard to be active: no browser starts without it.
 up=""
-for _ in $(seq 1 60); do "${SSH[@]}" systemctl is-active --quiet vm-browser-netguard.service 2>/dev/null && { up=1; break; }; sleep 2; done
-[ -n "$up" ] || { echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
+for _ in $(seq 1 60); do
+  "${SSH[@]}" systemctl is-active --quiet vm-browser-netguard.service 2>/dev/null && { up=1; break; }
+  # A VM that was still shutting down when this launcher started: start it again.
+  [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || virsh start "$VM" >/dev/null 2>&1
+  sleep 2
+done
+[ -n "$up" ] || { rm -f "$RUN/session.$$"; echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
 CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
@@ -565,14 +578,40 @@ CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty o
 # back over the connection to the VM, so the VM can't talk the launcher out of it.
 SECCTX=()
 probe=$(mktemp -d); trap 'rm -rf "$probe"' EXIT
-waypipe --secctx "vm-browser.$VM" -s "$probe/s" client 2>/dev/null & pp=$!
+waypipe --secctx "vm-browser.$VM" -s "$probe/s" client 2>/dev/null 9>&- & pp=$!
 for i in $(seq 1 60); do   # up to 3 s; on GNOME it fails within milliseconds
   kill -0 "$pp" 2>/dev/null || break
   if [ "$i" -ge 4 ] && [ -e "$probe/s" ]; then SECCTX=(--secctx "vm-browser.$VM"); break; fi
   sleep 0.05
 done
 kill "$pp" 2>/dev/null; wait "$pp" 2>/dev/null
-waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD"; rc=$?
+waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD" 9>&-; rc=$?
+# The last window closed: stop the VM, so it isn't running, online, while nothing uses it.
+# An automatic update that is running in the VM finishes first. VMB_KEEP_RUNNING=1 skips this.
+others() {   # true if another launcher of this VM is still open (session files of dead ones are removed)
+  local f; for f in "$RUN"/session.*; do [ -e "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f"; done
+  compgen -G "$RUN/session.*" >/dev/null
+}
+flock -w 120 9; rm -f "$RUN/session.$$"; others; last=$?; flock -u 9
+if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
+  for _ in $(seq 1 120); do   # up to an hour
+    # The update services are oneshot: "activating" while they run, "inactive" after.
+    "${SSH[@]}" 'systemctl is-active dnf5-automatic.service dnf-automatic.service | grep -qxE "activating|active|deactivating|reloading"' 2>/dev/null || break
+    sleep 30
+  done
+  flock -w 120 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
+  # A shutdown is a request the guest carries out; a compromised guest could ignore it. If it is
+  # still running after the wait (2 minutes) and no launcher has opened since, switch it off.
+  for _ in $(seq 1 "${VMB_SHUTDOWN_WAIT:-120}"); do
+    [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || break
+    sleep 1
+  done
+  flock -w 120 9
+  if ! others && [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ]; then
+    echo "vm-browser: VM $VM did not shut down; switching it off" >&2; virsh destroy "$VM" >/dev/null 2>&1
+  fi
+  flock -u 9
+fi
 exit $rc
 LAUNCHER
   } > "$bin"

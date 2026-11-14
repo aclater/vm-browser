@@ -10,6 +10,13 @@ for c in virsh ssh waypipe scp gtk-update-icon-cache; do
   chmod +x "$T/stubs/$c"
 done
 export PATH="$T/stubs:$PATH"
+export VMB_SHUTDOWN_WAIT=1   # the stub VM never stops by itself: keep the wait before a forced stop short
+# ssh answers "no update running" to the launcher's check before it stops the VM (#9).
+cat > "$T/stubs/ssh" <<'STUB'
+#!/bin/bash
+printf '%s\n' ssh "$@" -- >> "$T/calls"
+case "${*: -1}" in *is-active*) exit "${UPDATE_RUNNING:-1}";; esac
+STUB
 
 # launcher_for EXE [NAME] [WM] [VM-NAME]: runs make_launcher with a stubbed VM that reports
 # these values for package "testpkg", in a fresh HOME. Prints nothing; files land in $T/home.
@@ -88,3 +95,30 @@ check "a browser that exits with an error is not started a second time" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(runs | wc -l) = 1 ]"
 check "the probe's local waypipe client is stopped" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/probe-pid && $L && [ -s \$T/probe-pid ] && ! kill -0 \$(cat \$T/probe-pid) 2>/dev/null"
+
+# Stopping the VM when the last launcher closes (#9). The stub waypipe can keep a "window"
+# open for BROWSER_SECONDS.
+cat > "$T/stubs/waypipe" <<'STUB'
+#!/bin/bash
+printf '%s\n' waypipe "$@" -- >> "$T/calls"
+[ "${*: -1}" != client ] || exit 1   # the --secctx probe: a compositor without it
+sleep "${BROWSER_SECONDS:-0}"
+STUB
+check "closing the only browser shuts the VM down" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run1 $L && grep -A1 -x virsh \$T/calls | grep -qx shutdown"
+check "closing one of two browsers leaves the VM running; closing the second stops it" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && export XDG_RUNTIME_DIR=\$T/run2 && (BROWSER_SECONDS=3 $L &) && sleep 1 && $L && ! grep -qx shutdown \$T/calls && sleep 4 && [ \$(grep -cx shutdown \$T/calls) = 1 ]"
+check "a launcher that died doesn't keep the VM running" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && mkdir -p -m 700 \$T/run3/vm-browser-testvm && touch \$T/run3/vm-browser-testvm/session.999999 && XDG_RUNTIME_DIR=\$T/run3 $L && grep -qx shutdown \$T/calls"
+check "VMB_KEEP_RUNNING=1 leaves the VM running" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run4 VMB_KEEP_RUNNING=1 $L && ! grep -qx shutdown \$T/calls"
+check "a running update (oneshot: activating) keeps the VM up until it finishes" \
+  bash -c "launcher_for /usr/bin/firefox && grep -q 'activating|active' \$T/home/.local/bin/vmb-testvm-testpkg"
+
+# A guest that ignores the shutdown request is switched off (#9). The stub virsh always says
+# "running", so after the (shortened) wait the launcher must call destroy; with another
+# launcher open it must not.
+check "a VM that ignores the shutdown is switched off after the wait" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run5 $L 2>/dev/null && grep -A1 -x virsh \$T/calls | grep -qx destroy"
+check "...but not while another launcher of the VM is open" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && export XDG_RUNTIME_DIR=\$T/run6 && (BROWSER_SECONDS=4 $L 2>/dev/null &) && sleep 1 && $L 2>/dev/null && ! grep -qx destroy \$T/calls && ! grep -qx shutdown \$T/calls"
