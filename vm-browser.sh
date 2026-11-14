@@ -19,8 +19,10 @@ Options:
   --name NAME          VM name (default: <os><version>-browsers)
   --port N             Local SSH port (default: first free from 2230)
   --memory GiB         RAM (default 4)   --cpus N (default 4)   --disk SIZE (default 12G)
-  --lan                Let the VM reach your local network (default: blocked;
-                       the desktop's own services stay blocked either way)
+  --lan                Let the VM reach your local network (default: blocked). Your
+                       desktop's loopback and its own addresses (taken at setup)
+                       stay blocked either way. A later run without --lan blocks
+                       the LAN again
   -h, --help
 EOF
 }
@@ -327,64 +329,120 @@ EOF
 }
 
 # ---------- network guard ----------
-# passt hands the guest's traffic for the gateway address to the desktop's 127.0.0.1, so
-# without this the browser could reach every loopback-only service on the desktop (CUPS,
-# keyboard sharing, other VMs' SSH ports, dev servers). An nftables table in the guest drops
-# that, and by default the private and link-local networks too (the LAN), leaving DNS, DHCP
-# and the internet. It runs at every boot, after the network is up, from the gateway the guest
-# has then. Root in the guest could remove it; the browser runs without root.
-# --lan keeps the LAN reachable (the gateway stays blocked).
+# passt hands the guest's traffic for the gateway address to the desktop's 127.0.0.1, and its
+# traffic for any of the desktop's other addresses (libvirt and container bridges, VPNs, other
+# interfaces) to the desktop itself, past the desktop's firewall. Without a guard the browser
+# could reach every service listening there: CUPS, keyboard sharing, other VMs' SSH ports, dev
+# servers. An nftables table in the guest rejects:
+#   - always: the gateway, the desktop's own addresses (taken here, at setup), multicast and
+#     broadcast;
+#   - unless --lan: private, shared and link-local ranges, and the guest's on-link networks
+#     (the LAN, including its global IPv6 prefix).
+# DNS, DHCP, IPv6 neighbour discovery and the internet stay open. It is loaded at boot before
+# sshd, so no browser starts without it, and again when the network changes. With no gateway
+# yet it rejects all IPv4 but DHCP and fails, so systemd retries it: it fails closed. Root in
+# the guest could remove it; the browser runs without root.
+# host_addrs: the desktop's own addresses, IPv4 and IPv6, except loopback.
+host_addrs() {
+  ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+    | grep -E '^[0-9A-Fa-f.:]+$' | grep -vE '^(127\.|::1$)' | sort -u | tr '\n' ' '
+}
 setup_netguard() {
-  log "Network guard (desktop loopback blocked; LAN $([ "$LAN" = 1 ] && echo allowed || echo blocked))"
-  vmsh "$LAN" <<'EOF'
+  local addrs; addrs=$(host_addrs)
+  log "Network guard (desktop loopback and own addresses blocked; LAN $([ "$LAN" = 1 ] && echo allowed || echo blocked))"
+  vmsh "$LAN" "$addrs" <<'EOF'
 set -e
 rpm -q nftables >/dev/null 2>&1 || dnf -y -q install nftables
 install -d /etc/vm-browser
-echo "ALLOW_LAN=$1" > /etc/vm-browser/netguard.conf
+printf 'ALLOW_LAN=%q\nHOST_ADDRS=%q\n' "$1" "$2" > /etc/vm-browser/netguard.conf
 cat > /usr/local/sbin/vm-browser-netguard <<'GUARD'
 #!/bin/bash
-# vm-browser: drop the guest's traffic to the gateway (passt maps it to the desktop's
-# loopback) and, unless ALLOW_LAN=1, to private and link-local networks. DNS and DHCP pass.
+# vm-browser network guard: see setup_netguard in vm-browser.sh. Rejects the guest's traffic to
+# the gateway (passt maps it to the desktop's loopback), to the desktop's own addresses, to
+# multicast and broadcast and, unless ALLOW_LAN=1, to the LAN. DNS, DHCP and neighbour
+# discovery pass. Exits non-zero, with all IPv4 but DHCP rejected, while there is no gateway.
 set -euo pipefail
-ALLOW_LAN=0; . /etc/vm-browser/netguard.conf
+ALLOW_LAN=0 HOST_ADDRS=""; . /etc/vm-browser/netguard.conf
+addr='^[0-9A-Fa-f.:]+(/[0-9]+)?$'
 gw4=$(ip -4 route show default | awk '{print $3; exit}')
-gw6=$(ip -6 route show default | awk '{print $3; exit}')
-{
+gw6=""
+for _ in $(seq 1 10); do   # IPv6 routes come from router advertisements, maybe a little later
+  gw6=$(ip -6 route show default | awk '{print $3; exit}'); [ -n "$gw6" ] && break; sleep 1
+done
+[[ -z $gw4 || $gw4 =~ $addr ]] || gw4=""; [[ -z $gw6 || $gw6 =~ $addr ]] || gw6=""
+host4=() host6=() net4=() net6=()
+for a in $HOST_ADDRS; do [[ $a =~ $addr ]] || continue; if [[ $a == *:* ]]; then host6+=("$a"); else host4+=("$a"); fi; done
+# The guest's on-link networks (not link-local, which is rejected as a range).
+while read -r n; do [[ $n =~ $addr ]] && net4+=("$n"); done < <(ip -4 route show scope link | awk '{print $1}' | sort -u)
+while read -r n; do [[ $n =~ $addr && $n != fe80:* ]] && net6+=("$n"); done < <(ip -6 route show | awk '$1 != "default" {print $1}' | sort -u)
+# rules [LOCKDOWN]: the ruleset. One rule per address or network, so overlaps can't break it.
+# With LOCKDOWN, everything but loopback, DHCP and neighbour discovery is rejected.
+rules() {
+  local a
   echo 'table inet vm_browser'; echo 'delete table inet vm_browser'
   echo 'table inet vm_browser {'
   echo ' chain out {'
   echo '  type filter hook output priority 0; policy accept;'
-  echo '  ct state established,related accept'
   echo '  oif "lo" accept'
-  echo '  meta l4proto { udp, tcp } th dport 53 accept'
+  echo '  ct state established,related accept'
   echo '  meta l4proto udp udp dport { 67, 547 } accept'
-  echo '  meta l4proto ipv6-icmp accept'
+  echo '  meta l4proto ipv6-icmp icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-report, mld2-listener-report } accept'
+  if [ -n "${1:-}" ]; then echo '  counter reject'; echo ' }'; echo '}'; return; fi
+  [ -n "$gw4" ] || echo '  meta nfproto ipv4 counter reject'
+  [ -n "$gw6" ] || echo '  meta nfproto ipv6 counter reject'
+  # DNS may go to the gateway: passt forwards it to the desktop's resolver.
+  echo '  meta l4proto { udp, tcp } th dport 53 accept'
+  echo '  ip daddr { 224.0.0.0/4, 255.255.255.255 } counter drop'
+  echo '  ip6 daddr ff00::/8 counter drop'
   [ -z "$gw4" ] || echo "  ip daddr $gw4 counter reject"
   [ -z "$gw6" ] || echo "  ip6 daddr $gw6 counter reject"
+  for a in "${host4[@]}"; do echo "  ip daddr $a counter reject"; done
+  for a in "${host6[@]}"; do echo "  ip6 daddr $a counter reject"; done
   if [ "$ALLOW_LAN" != 1 ]; then
     echo '  ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject'
     echo '  ip6 daddr { fc00::/7, fe80::/10 } counter reject'
+    for a in "${net4[@]}"; do echo "  ip daddr $a counter reject"; done
+    for a in "${net6[@]}"; do echo "  ip6 daddr $a counter reject"; done
   fi
   echo ' }'
   echo '}'
-} | nft -f -
+}
+# If the ruleset doesn't load, nothing but loopback, DHCP and neighbour discovery gets out.
+if ! rules | nft -f -; then
+  rules lockdown | nft -f -
+  echo "vm-browser-netguard: the ruleset didn't load; all outgoing traffic is rejected" >&2; exit 1
+fi
+[ -n "$gw4" ] || { echo "vm-browser-netguard: no IPv4 gateway yet; all IPv4 but DHCP is rejected until there is" >&2; exit 1; }
 GUARD
 chmod 755 /usr/local/sbin/vm-browser-netguard
 cat > /etc/systemd/system/vm-browser-netguard.service <<'UNIT'
 [Unit]
-Description=vm-browser: block the desktop's loopback and the LAN
+Description=vm-browser: block the desktop's loopback and own addresses, and the LAN
 Wants=network-online.target
 After=network-online.target
+Before=sshd.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/vm-browser-netguard
+Restart=on-failure
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-restorecon /usr/local/sbin/vm-browser-netguard /etc/systemd/system/vm-browser-netguard.service 2>/dev/null || true
+# Network changes (a new address, a router advertisement, DHCP) load it again.
+if [ -d /etc/NetworkManager/dispatcher.d ]; then
+  cat > /etc/NetworkManager/dispatcher.d/90-vm-browser-netguard <<'HOOK'
+#!/bin/sh
+case "$2" in up|dhcp4-change|dhcp6-change|connectivity-change) systemctl restart --no-block vm-browser-netguard.service;; esac
+HOOK
+  chmod 755 /etc/NetworkManager/dispatcher.d/90-vm-browser-netguard
+fi
+restorecon /usr/local/sbin/vm-browser-netguard /etc/systemd/system/vm-browser-netguard.service \
+  /etc/NetworkManager/dispatcher.d/90-vm-browser-netguard 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable vm-browser-netguard.service >/dev/null 2>&1
 systemctl restart vm-browser-netguard.service
@@ -494,7 +552,10 @@ write_launcher() {
 export LIBVIRT_DEFAULT_URI=qemu:///session
 SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
-for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
+# Wait for the VM, and for its network guard to be active: no browser starts without it.
+up=""
+for _ in $(seq 1 60); do "${SSH[@]}" systemctl is-active --quiet vm-browser-netguard.service 2>/dev/null && { up=1; break; }; sleep 2; done
+[ -n "$up" ] || { echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
 CMD="$EXE$(printf ' %q' "$@")"
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
