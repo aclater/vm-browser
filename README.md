@@ -132,6 +132,17 @@ By default a VM keeps its disk, so anything that compromises it stays until you 
 
 ## Status
 
+### Disposable mode, tested 2026-11-14
+
+On GitHub's runner (Fedora 44 container with KVM), `tests/e2e.sh` makes the e2e VM disposable and checks:
+
+- that its disk becomes a read-only base under an empty overlay;
+- that a session's files, written as the browser user and as root, are gone in the next session, along with root disabling the network guard;
+- that a script run refuses while the VM runs, and that its changes reach later sessions;
+- `--update` and `--persistent`.
+
+Result: pass. `tests/run.sh` has 19 unit checks for the overlay and maintenance logic.
+
 ### Security changes, tested 2026-11-14
 
 Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.11.2), and on GitHub's runner (Fedora 44 container with KVM, headless Sway). `tests/e2e.sh` builds a VM, then checks:
