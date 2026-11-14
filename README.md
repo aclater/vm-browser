@@ -33,7 +33,7 @@ your desktop (Wayland)                         VM (libvirt user session)
   ```bash
   sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2
   ```
-- **RHEL guests** also need a Red Hat account: an [activation key and org ID](https://console.redhat.com/insights/connector/activation-keys), plus the RHEL KVM guest image or DVD ISO from [access.redhat.com](https://access.redhat.com/downloads). There's no public download.
+- **RHEL guests** also need a Red Hat account: an [activation key and org ID](https://console.redhat.com/insights/connector/activation-keys), plus the RHEL KVM guest image or DVD ISO from [access.redhat.com](https://access.redhat.com/downloads). 
 
 ## Usage
 
