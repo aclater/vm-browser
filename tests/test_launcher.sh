@@ -92,3 +92,5 @@ check "a launcher that died doesn't keep the VM running" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && mkdir -p -m 700 \$T/run3/vm-browser-testvm && touch \$T/run3/vm-browser-testvm/session.999999 && XDG_RUNTIME_DIR=\$T/run3 $L && grep -qx shutdown \$T/calls"
 check "VMB_KEEP_RUNNING=1 leaves the VM running" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run4 VMB_KEEP_RUNNING=1 $L && ! grep -qx shutdown \$T/calls"
+check "a running update (oneshot: activating) keeps the VM up until it finishes" \
+  bash -c "launcher_for /usr/bin/firefox && grep -q 'activating|active' \$T/home/.local/bin/vmb-testvm-testpkg"

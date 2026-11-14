@@ -146,11 +146,21 @@ fi
 
 # #9: when the last launcher closes, the VM shuts down; the next launch starts it again, and
 # the network guard is back after that boot. "firefox --version" opens no window.
-"$L" --version >/dev/null 2>&1 || fail "the launcher could not run firefox --version"
+# launch ARGS: the launcher, limited to 5 minutes; on a timeout, show what it was waiting for.
+launch() {
+  local out rc; out=$(mktemp)
+  timeout 300 "$L" "$@" > "$out" 2>&1; rc=$?
+  if [ $rc = 124 ]; then
+    echo "--- launcher timed out; its output:" >&2; cat "$out" >&2
+    echo "--- processes:" >&2; ps -eo pid,ppid,etime,args --forest >&2 || true
+  fi
+  cat "$out"; rm -f "$out"; return $rc
+}
+launch --version >/dev/null || fail "the launcher could not run firefox --version"
 for _ in $(seq 1 60); do [ "$(virsh domstate "$NAME")" = "shut off" ] && break; sleep 3; done
 [ "$(virsh domstate "$NAME")" = "shut off" ] || fail "the VM is still running after its last launcher closed"
 pass "the VM shut down after its last launcher closed"
-"$L" --version | grep -q 'Mozilla Firefox' || fail "the launcher did not start the VM again"
-VMB_KEEP_RUNNING=1 "$L" --version >/dev/null 2>&1 || true
+launch --version | grep -q 'Mozilla Firefox' || fail "the launcher did not start the VM again"
+VMB_KEEP_RUNNING=1 launch --version >/dev/null || true
 "${ASSH[@]}" 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
 pass "the launcher starts the VM again; the network guard is loaded at boot"
