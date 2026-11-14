@@ -444,10 +444,15 @@ install_rpm() {
   safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg") in $f"
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
-  scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
-  vmsh <<'EOF'
+  # Copied into a new folder only admin can open, not a fixed name in a shared folder, where the
+  # browser user could plant a file of its own for root to install. (On disk: /tmp is in RAM.)
+  local tmpd; tmpd=$(vm 'mktemp -d -p /var/tmp vm-browser.XXXXXXXX') || tmpd=""
+  safe_path "$tmpd" || die "could not make a folder for the RPM in the VM"
+  scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" "admin@127.0.0.1:$tmpd/browser.rpm"
+  vmsh "$tmpd" <<'EOF'
 set -e
-dnf -y -q install /var/tmp/vm-browser.rpm; rm -f /var/tmp/vm-browser.rpm
+[ "$(stat -c '%U %a' "$1")" = "admin 700" ] || { echo "unexpected owner or mode of $1" >&2; exit 1; }
+dnf -y -q install "$1/browser.rpm"; rm -rf "$1"
 systemctl list-unit-files pab-protection.service >/dev/null 2>&1 && systemctl restart pab-protection || true
 EOF
   make_launcher "$pkg"
@@ -459,10 +464,12 @@ EOF
 # command on the desktop.
 
 # clean_text: one line of printable text, at most 80 characters, for names shown on the desktop.
-clean_text() { LC_ALL=C tr -d '\000-\037\177' | head -c 80; }
+# C0 controls and DEL go, and so do C1 controls (U+0080-U+009F, which some terminals obey).
+clean_text() { LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C sed 's/\xc2[\x80-\x9f]//g' | head -c 80; }
 # safe_path / safe_word STRING: true if STRING is a plain command path, or a plain window class
-# or package name: no spaces, quotes or shell characters.
-safe_path() { [[ $1 =~ ^/?[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ && $1 != *..* && ${#1} -le 200 ]]; }
+# or package name: no spaces, quotes or shell characters. No part of a path may start with "-":
+# the command follows the host on ssh's command line, where ssh still reads options (-A, -X).
+safe_path() { [[ $1 =~ ^(/[A-Za-z0-9._+][A-Za-z0-9._+-]*|[A-Za-z0-9][A-Za-z0-9._+-]*)(/[A-Za-z0-9._+][A-Za-z0-9._+-]*)*$ && $1 != *..* && ${#1} -le 200 ]]; }
 safe_word() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && ${#1} -le 100 ]]; }
 # desktop_quote STRING: STRING as one argument of a .desktop Exec key (spec: double quotes,
 # with \ " ` $ escaped by a backslash).
@@ -491,13 +498,20 @@ for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
 CMD="$EXE$(printf ' %q' "$@")"
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
-# that support it (Sway, Hyprland, KDE, ...) can tell them apart and withhold privileged
-# protocols. Compositors without it (GNOME) make waypipe stop at once: then run it without.
-err=$(mktemp); trap 'rm -f "$err"' EXIT
-waypipe --secctx "vm-browser.$VM" --no-gpu "${SSH[@]}" "$CMD" 2> >(tee "$err" >&2); rc=$?; wait $! 2>/dev/null
-if [ $rc -ne 0 ] && grep -q wp_security_context_manager_v1 "$err"; then
-  waypipe --no-gpu "${SSH[@]}" "$CMD"; rc=$?
-fi
+# that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
+# GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
+# checked here, on the desktop, by a short-lived local waypipe client, never from what comes
+# back over the connection to the VM, so the VM can't talk the launcher out of it.
+SECCTX=()
+probe=$(mktemp -d); trap 'rm -rf "$probe"' EXIT
+waypipe --secctx "vm-browser.$VM" -s "$probe/s" client 2>/dev/null & pp=$!
+for i in $(seq 1 60); do   # up to 3 s; on GNOME it fails within milliseconds
+  kill -0 "$pp" 2>/dev/null || break
+  if [ "$i" -ge 4 ] && [ -e "$probe/s" ]; then SECCTX=(--secctx "vm-browser.$VM"); break; fi
+  sleep 0.05
+done
+kill "$pp" 2>/dev/null; wait "$pp" 2>/dev/null
+waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD"; rc=$?
 exit $rc
 LAUNCHER
   } > "$bin"
