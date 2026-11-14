@@ -25,3 +25,20 @@ check "a PNG icon is copied" icon_ok "$T/good.png"
 fails "a file named .png that isn't a PNG (an SVG) is refused" icon_ok "$T/fake.png"
 fails "a PNG over 512 KiB is refused" icon_ok "$T/huge.png"
 fails "a missing icon is refused" icon_ok "$T/none.png"
+
+# install_rpm with a stubbed VM: records where the RPM is copied and what root installs.
+rpm_install() {
+  bash -c '
+    source ./vm-browser.sh
+    KEYF=$T/k KH=$T/kh PORT=2299 NAME=t
+    rpm() { echo testbrowser; }; prisma_prereqs() { :; }; make_launcher() { :; }
+    vm() { echo "${VM_TMP:-/var/tmp/vm-browser.Ab12}"; }
+    scp() { printf "%s\n" "${@: -1}" > "$T/rpm-scp"; }
+    vmsh() { printf "%s\n" "$@" > "$T/rpm-args"; cat > "$T/rpm-script"; }
+    install_rpm "$T/x.rpm"'
+}
+export -f rpm_install
+check "an --rpm is copied into a private folder made in the VM, not a fixed path (#7)" \
+  bash -c 'rpm_install >/dev/null && grep -qx admin@127.0.0.1:/var/tmp/vm-browser.Ab12/browser.rpm "$T/rpm-scp" && grep -qx /var/tmp/vm-browser.Ab12 "$T/rpm-args" && grep -q "admin 700" "$T/rpm-script" && ! grep -q vm-browser.rpm vm-browser.sh'
+fails "a folder name from the VM with shell characters is refused" \
+  bash -c 'VM_TMP="/tmp/x;id" rpm_install'
