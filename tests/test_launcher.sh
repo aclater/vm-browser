@@ -37,7 +37,8 @@ check "the launcher runs the command in the VM with its arguments quoted (#7)" \
 check "the launcher logs in with the browser key, not the admin key (#7)" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && grep -qx \$T/bkey \$T/calls && ! grep -qx \$T/key \$T/calls && grep -qx StrictHostKeyChecking=yes \$T/calls"
 for evil in '/usr/bin/firefox;touch${IFS}/tmp/pwned' '$(touch /tmp/pwned)' '`touch /tmp/pwned`' \
-            '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox'; do
+            '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox' \
+            '-A' '-oProxyCommand=id' '/usr/bin/-x' 'bin/-X' '.hidden/x' '/usr//bin/x'; do
   check "a start command with shell characters is refused: $(printf '%q' "$evil")" \
     bash -c '! out=$(launcher_for "$1" 2>&1) && grep -q "refusing the start command" <<< "$out"' _ "$evil"
   check "  ...and no launcher is written" bash -c "[ ! -e $L ]"
@@ -60,28 +61,44 @@ fails "a package name with shell characters is refused" \
   bash -c 'source ./vm-browser.sh; NAME=t; make_launcher "x;id"'
 check "clean_text drops control characters and newlines" \
   bash -c 'source ./vm-browser.sh; [ "$(printf "a\033[2Jb\nc" | clean_text)" = "a[2Jbc" ]'
+check "clean_text drops C1 controls (8-bit CSI) but keeps other UTF-8 text" \
+  bash -c 'source ./vm-browser.sh; [ "$(printf "a\xc2\x9b2Jb\xc3\xa9" | clean_text)" = "$(printf "a2Jb\xc3\xa9")" ]'
+check "plain command paths are accepted" \
+  bash -c 'source ./vm-browser.sh; for p in /usr/bin/firefox /opt/google/chrome/google-chrome brave-browser /usr/lib64/c++/x_y.sh; do safe_path "$p" || exit 1; done'
 
-# waypipe --secctx (#3). The stub waypipe fails like waypipe on GNOME when NOSECCTX is set.
+# waypipe --secctx (#3). Whether the compositor offers wp_security_context_v1 is probed on the
+# desktop with a local "waypipe client". The stub fails that probe like waypipe on GNOME when
+# NOSECCTX is set; otherwise its probe stays up with its socket, like waypipe on Sway.
 cat > "$T/stubs/waypipe" <<'STUB'
 #!/bin/bash
 printf '%s\n' waypipe "$@" -- >> "$T/calls"
-if [ "$1" = --secctx ] && [ -n "${NOSECCTX:-}" ]; then
-  echo 'Error: "src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global"' >&2; exit 1
+if [ "${*: -1}" = client ]; then
+  [ -z "${NOSECCTX:-}" ] || { echo 'Error: "src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global"' >&2; exit 1; }
+  while [ $# -gt 0 ]; do [ "$1" = -s ] && touch "$2"; shift; done; echo $$ > "$T/probe-pid"; exec sleep 30
 fi
+[ -z "${VM_SAYS:-}" ] || echo "$VM_SAYS" >&2   # what the VM prints on the ssh connection
 exit "${BROWSER_EXIT:-0}"
 STUB
-check "the launcher asks for a security context named after the VM" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && [ \$(grep -cx waypipe \$T/calls) = 1 ] && grep -A1 -x -- --secctx \$T/calls | grep -qx vm-browser.testvm"
-check "without the protocol (GNOME) it runs waypipe again without --secctx" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && NOSECCTX=1 $L 2>/dev/null && [ \$(grep -cx waypipe \$T/calls) = 2 ] && [ \$(grep -cx -- --secctx \$T/calls) = 1 ]"
+# runs: the waypipe calls that ran the browser (not the probe), one line each.
+runs() { awk '/^waypipe$/{c=""; r=1; next} /^--$/{if(r) print c; r=0; next} {c=c" "$0}' "$T/calls" | grep -v ' client$'; }
+export -f runs
+check "the launcher asks for a security context named after the VM where the compositor offers one" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && [ \$(runs | wc -l) = 1 ] && runs | grep -q -- ' --secctx vm-browser.testvm '"
+check "without the protocol (GNOME) the launcher runs waypipe once, without --secctx" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && NOSECCTX=1 $L && [ \$(runs | wc -l) = 1 ] && ! runs | grep -q -- --secctx"
+check "a VM that prints waypipe's no-secctx error and fails gets no second run without --secctx" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! VM_SAYS='Error: \"src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global\"' BROWSER_EXIT=1 $L 2>/dev/null && [ \$(runs | wc -l) = 1 ] && runs | grep -q -- --secctx"
 check "a browser that exits with an error is not started a second time" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(grep -cx waypipe \$T/calls) = 1 ]"
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(runs | wc -l) = 1 ]"
+check "the probe's local waypipe client is stopped" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/probe-pid && $L && [ -s \$T/probe-pid ] && ! kill -0 \$(cat \$T/probe-pid) 2>/dev/null"
 
 # Stopping the VM when the last launcher closes (#9). The stub waypipe can keep a "window"
 # open for BROWSER_SECONDS.
 cat > "$T/stubs/waypipe" <<'STUB'
 #!/bin/bash
 printf '%s\n' waypipe "$@" -- >> "$T/calls"
+[ "${*: -1}" != client ] || exit 1   # the --secctx probe: a compositor without it
 sleep "${BROWSER_SECONDS:-0}"
 STUB
 check "closing the only browser shuts the VM down" \

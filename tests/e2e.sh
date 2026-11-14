@@ -101,6 +101,33 @@ if [ -n "${E2E_LAN_TARGET:-}" ]; then   # host:port of a LAN service the desktop
   pass "the LAN ($E2E_LAN_TARGET) is blocked"
 fi
 
+# #2 with --lan: the LAN opens, but the desktop's own other addresses (here E2E_HOST_ADDR, a
+# bridge or dummy interface's address on the desktop) stay blocked. Control as above. Then a run
+# without --lan blocks the LAN again.
+if [ -n "${E2E_HOST_ADDR:-}" ]; then
+  python3 -m http.server --bind "$E2E_HOST_ADDR" "$LPORT" >/dev/null 2>&1 & http_pid=$!
+  sleep 1
+  ./vm-browser.sh --name "$NAME" --lan firefox >/dev/null || fail "the run with --lan failed"
+  "${ASSH[@]}" 'sudo nft list table inet vm_browser' | grep -q '10.0.0.0/8' && fail "--lan left the LAN blocked"
+  [ "$(probe "$E2E_HOST_ADDR" "$LPORT")" = closed ] || fail "with --lan the guest reaches the desktop's address $E2E_HOST_ADDR"
+  "${ASSH[@]}" 'sudo nft delete table inet vm_browser'
+  reached=$(probe "$E2E_HOST_ADDR" "$LPORT")
+  "${ASSH[@]}" 'sudo systemctl restart vm-browser-netguard'
+  [ "$reached" = open ] || fail "control failed: without the guard $E2E_HOST_ADDR:$LPORT wasn't reachable either"
+  [ "$(probe "$E2E_HOST_ADDR" "$LPORT")" = closed ] || fail "the guard did not come back"
+  if [ -n "${E2E_LAN_TARGET:-}" ]; then
+    [ "$(probe "${E2E_LAN_TARGET%:*}" "${E2E_LAN_TARGET#*:}")" = open ] || fail "with --lan the LAN ($E2E_LAN_TARGET) is still blocked"
+  fi
+  kill "$http_pid" 2>/dev/null || true
+  pass "with --lan the desktop's address $E2E_HOST_ADDR stays blocked (open without the guard)"
+  ./vm-browser.sh --name "$NAME" firefox >/dev/null || fail "the run without --lan failed"
+  "${ASSH[@]}" 'sudo nft list table inet vm_browser' | grep -q '10.0.0.0/8' || fail "a run without --lan left the LAN open"
+  if [ -n "${E2E_LAN_TARGET:-}" ]; then
+    [ "$(probe "${E2E_LAN_TARGET%:*}" "${E2E_LAN_TARGET#*:}")" = closed ] || fail "after a run without --lan the guest reaches the LAN ($E2E_LAN_TARGET)"
+  fi
+  pass "a later run without --lan blocks the LAN again"
+fi
+
 # #7: the VM's host key is pinned, and the admin and browser accounts have separate keys.
 A=(ssh -F none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" -p "$(cat "$D/port")")
 { [ "$(wc -l < "$D/known_hosts")" = 1 ] && grep -q ' ssh-ed25519 ' "$D/known_hosts"; } || fail "known_hosts is not one pinned ed25519 key"
