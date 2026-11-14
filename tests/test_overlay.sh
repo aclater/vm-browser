@@ -19,6 +19,7 @@ cat > "$T/dstubs/qemu-img" <<'STUB'
 #!/bin/bash
 printf '%s\n' qemu-img "$@" -- >> "$T/calls"
 [ -z "${QEMU_FAIL:-}" ] || exit 1
+[ -z "${QEMU_FAIL_COMMIT:-}" ] || [ "$1" != commit ] || exit 1
 [ "$1" != create ] || : > "${*: -1}"
 STUB
 chmod +x "$T/dstubs/virsh" "$T/dstubs/qemu-img"
@@ -52,6 +53,13 @@ check "...but a maintenance file left by a run that died is ignored" \
 check "without a new overlay the VM isn't started" \
   bash -c '! dl "shut off" QEMU_FAIL=1 2>/dev/null && ! grep -qx start "$T/calls" && ! grep -qx waypipe "$T/calls"'
 
+check "a launcher that closes while vm-browser.sh maintains the VM leaves the VM and overlay alone" \
+  bash -c 'mkdir -p -m 700 "$T/drun/vm-browser-testvm" && launcher_for /usr/bin/firefox && touch "$T/home/base.qcow2" && echo running > "$T/vstate" && rm -f "$T/calls" && (sleep 1; echo $$ > "$T/drun/vm-browser-testvm/maintenance") & PATH="$T/dstubs:$PATH" XDG_RUNTIME_DIR="$T/drun" IGNORE_SHUTDOWN=1 BROWSER_SECONDS=2 "$T/home/.local/bin/vmb-testvm-testpkg" 2>/dev/null; r=0; grep -qx destroy "$T/calls" && r=1; [ "$(grep -cx create "$T/calls")" = 0 ] || r=1; rm -f "$T/drun/vm-browser-testvm/maintenance"; exit $r'
+check "while a save into the base is unfinished, the launcher doesn't start the VM" \
+  bash -c 'launcher_for /usr/bin/firefox && touch "$T/home/base.qcow2" "$T/home/committing" && echo "shut off" > "$T/vstate" && rm -f "$T/calls" && ! PATH="$T/dstubs:$PATH" XDG_RUNTIME_DIR="$T/drun" "$T/home/.local/bin/vmb-testvm-testpkg" 2>/dev/null && ! grep -qx start "$T/calls" && ! grep -qx create "$T/calls"'
+check "a disposable VM in another state (paused, crashed) isn't started on its old overlay" \
+  bash -c 'dl paused 2>/dev/null; ! grep -qx start "$T/calls"'
+
 # Maintenance in vm-browser.sh. m SCRIPT: runs SCRIPT with the script's functions, a VM folder
 # in $T/m, and the stubs.
 m() {
@@ -77,6 +85,12 @@ check "--persistent: the base becomes the VM's disk again" \
   bash -c 'echo "shut off" > "$T/vstate"; m "echo base > \$DIR/base.qcow2; chmod 400 \$DIR/base.qcow2; : > \$DIR/disk.qcow2; WANT_DISPOSABLE=0; begin_maintenance; [ ! -e \$DIR/base.qcow2 ] && [ \"\$(cat \$DIR/disk.qcow2)\" = base ] && [ -z \"\$MAINT\" ]"'
 check "a shutdown that never comes discards the run's changes" \
   bash -c 'echo "shut off" > "$T/vstate"; m "touch \$DIR/base.qcow2; WANT_DISPOSABLE=1; begin_maintenance; echo running > \$T/vstate; sleep() { :; }; IGNORE_SHUTDOWN=1 end_maintenance" 2>/dev/null; ! grep -qx commit "$T/calls" && [ "$(line destroy)" -gt 0 ]'
+check "an interrupted save is finished before anything else" \
+  bash -c 'echo "shut off" > "$T/vstate"; m "touch \$DIR/base.qcow2 \$DIR/disk.qcow2 \$DIR/committing; WANT_DISPOSABLE=1; begin_maintenance; [ ! -e \$DIR/committing ]; r=\$?; trap - EXIT; exit \$r" && c=$(line commit) && [ "$c" -gt 0 ] && [ "$(line create)" -gt "$c" ]'
+check "a save that fails keeps the overlay, and the base is marked unfinished" \
+  bash -c 'echo "shut off" > "$T/vstate"; m "touch \$DIR/base.qcow2; WANT_DISPOSABLE=1; begin_maintenance; echo running > \$T/vstate; QEMU_FAIL_COMMIT=1 end_maintenance" 2>/dev/null; [ -e "$T/m/committing" ] && [ "$(grep -cx create "$T/calls")" = 1 ] && ! grep -qx destroy "$T/calls"'
+check "a browser opened during the run (an older launcher) discards the run" \
+  bash -c 'echo "shut off" > "$T/vstate"; m "touch \$DIR/base.qcow2; WANT_DISPOSABLE=1; begin_maintenance; echo running > \$T/vstate; touch \$RUN/session.\$\$; end_maintenance" 2>/dev/null; r=0; grep -qx commit "$T/calls" && r=1; rm -f "$T"/mrun/vm-browser-testvm/session.*; exit $r'
 check "--update and --disposable need no browser" \
   bash -c 'source ./vm-browser.sh; parse_args --update && parse_args --disposable && parse_args --persistent --name x'
 rm -f "$T/vstate"

@@ -114,7 +114,7 @@ By default a VM keeps its disk, so anything that compromises it stays until you 
 - **How it works:** the installed system is kept read-only in `~/.local/share/vm-browser/<vm>/base.qcow2`. Each session runs on an empty overlay, `disk.qcow2`. The launcher makes a new overlay before it starts the VM, and again after the VM stops, so a session's changes are discarded, even changes made as root.
 - **What you lose:** downloads, browser profiles, bookmarks, saved passwords and sign-ins. Every session starts like a fresh install. This suits personal or one-off browsing. It suits a work browser that you sign into every day less well, and Prisma Access Browser needs you to sign in again in each session.
 - **Updates:** a session installs the day's updates as usual but loses them at shutdown, and never reboots for them. Run `--update` to install them into the installed system. The launcher shows a desktop notification when that is more than a week old.
-- **Script runs** (adding a browser, `--update`, `--lan`) change the installed system. They need the VM shut off with no browser open, and launchers refuse to start until the run has finished. If a run fails, its changes are discarded.
+- **Script runs** (adding a browser, `--update`, `--lan`) change the installed system. They need the VM shut off with no browser open, and launchers refuse to start until the run has finished. If a run fails, its changes are discarded. If it is interrupted while saving them into the installed system, launchers refuse to start until the next run (for example `--update`) has finished the save.
 - **An existing VM** made disposable keeps its current disk as the installed system, including anything a past session left there. To start clean, remove the VM and create it again with `--disposable`.
 - `--persistent` makes the VM keep its disk again.
 
@@ -141,7 +141,7 @@ On GitHub's runner (Fedora 44 container with KVM), `tests/e2e.sh` makes the e2e 
 - that a script run refuses while the VM runs, and that its changes reach later sessions;
 - `--update` and `--persistent`.
 
-Result: pass. `tests/run.sh` has 20 unit checks for the overlay and maintenance logic.
+Result: pass. `tests/run.sh` has 26 unit checks for the overlay and maintenance logic, including interrupted saves and launchers closing during a run.
 
 ### Security changes, tested 2026-11-14
 
@@ -153,7 +153,7 @@ Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.
 - that a hostile RPM gets no launcher;
 - the shutdown after the last window closes, and the restart.
 
-`tests/run.sh` runs 142 unit checks that need no VM.
+`tests/run.sh` runs 148 unit checks that need no VM.
 
 | Scenario | Where | Result |
 |---|---|---|
