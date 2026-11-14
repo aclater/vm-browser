@@ -39,6 +39,17 @@ done
 case "$OS" in fedora) VER=${VER:-44};; rhel) VER=${VER:-10};; *) echo "--os must be fedora or rhel"; exit 1;; esac
 NAME=${NAME:-$OS$VER-browsers}
 [ ${#BROWSERS[@]} -gt 0 ] || [ ${#RPMS[@]} -gt 0 ] || { echo "Choose at least one browser or --rpm."; usage; exit 1; }
+check_options
+}
+
+# The options go into file paths, the domain XML, cloud-init and kickstart files: plain values only.
+check_options() {
+  [[ $NAME =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]] || die "--name: letters, digits and hyphens, at most 63, starting with a letter or digit"
+  [[ $VER =~ ^[0-9]{1,3}$ ]] || die "--version: a release number such as 44 or 10"
+  [ -z "$PORT" ] || { [[ $PORT =~ ^[0-9]{4,5}$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ]; } || die "--port: a number from 1024 to 65535"
+  [[ $MEM =~ ^[1-9][0-9]{0,2}$ ]] || die "--memory: whole GiB, such as 4"
+  [[ $CPUS =~ ^[1-9][0-9]{0,2}$ ]] || die "--cpus: a number, such as 4"
+  [[ $DISK =~ ^[1-9][0-9]{0,4}[MGT]?$ ]] || die "--disk: a size such as 12G"
 }
 
 log() { printf '\n== %s\n' "$*"; }
@@ -49,7 +60,9 @@ setup() {
   export LIBVIRT_DEFAULT_URI=qemu:///session
   DIR="$HOME/.local/share/vm-browser/$NAME"
   mkdir -p "$DIR"; chmod 700 "$DIR"
-  KEYF="$DIR/id_ed25519"; KH="$DIR/known_hosts"
+  # Separate keys for the admin account (sudo) and the browser account the launchers use, and
+  # the VM's own SSH host key, made here so known_hosts is pinned before the VM first boots.
+  KEYF="$DIR/id_ed25519"; BKEYF="$DIR/browser_ed25519"; HKEYF="$DIR/ssh_host_ed25519_key"; KH="$DIR/known_hosts"
   for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg; do
     command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2"
   done
@@ -57,12 +70,17 @@ setup() {
 
 # ---------- VM creation (skipped if the VM already exists) ----------
 create_vm() {
-  [ -f "$KEYF" ] || ssh-keygen -q -t ed25519 -N '' -C "vm-browser-$NAME" -f "$KEYF"
+  [ -f "$KEYF" ] || ssh-keygen -q -t ed25519 -N '' -C "vm-browser-$NAME-admin" -f "$KEYF"
+  [ -f "$BKEYF" ] || ssh-keygen -q -t ed25519 -N '' -C "vm-browser-$NAME-browser" -f "$BKEYF"
+  rm -f "$HKEYF" "$HKEYF.pub"; ssh-keygen -q -t ed25519 -N '' -C "$NAME" -f "$HKEYF"
   local key; key=$(cat "$KEYF.pub")
   if [ -z "$PORT" ]; then   # first port that is neither listening nor assigned to another vm-browser VM
     PORT=2230; while ss -Htln "sport = :$PORT" | grep -q . || cat "$HOME"/.local/share/vm-browser/*/port 2>/dev/null | grep -qx "$PORT"; do PORT=$((PORT+1)); done
   fi
   echo "$PORT" > "$DIR/port"
+  # Only this host key is accepted on the port, so a listener another local user starts there
+  # first gets no commands and no credentials.
+  printf '[127.0.0.1]:%s %s\n' "$PORT" "$(cut -d' ' -f1,2 "$HKEYF.pub")" > "$KH"
 
   if [ -z "$IMAGE" ]; then
     [ "$OS" = fedora ] || die "RHEL images need a Red Hat login. Download the KVM guest image or DVD ISO from access.redhat.com and pass --image."
@@ -73,6 +91,7 @@ create_vm() {
     *.qcow2|*.img) install_from_cloud_image "$key";;
     *) die "--image must be a .qcow2 or .iso";;
   esac
+  rm -f "$HKEYF"   # the VM has it now
 }
 
 # Fedora release keys: the primary key fingerprint per release. A Fedora image is used only if
@@ -161,7 +180,7 @@ install_from_cloud_image() {
   log "Creating the VM from $(basename "$IMAGE")"
   if [ "${DOWNLOADED:-0}" = 1 ]; then mv "$IMAGE" "$DIR/disk.qcow2"; else cp --sparse=always "$IMAGE" "$DIR/disk.qcow2"; fi
   qemu-img resize -q "$DIR/disk.qcow2" "$DISK"
-  cat > "$DIR/user-data" <<EOF
+  ( umask 077; cat > "$DIR/user-data" <<EOF
 #cloud-config
 hostname: $NAME
 ssh_pwauth: false
@@ -171,9 +190,15 @@ users:
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     lock_passwd: true
     ssh_authorized_keys: ["$1"]
+ssh_keys:
+  ed25519_private: |
+$(sed 's/^/    /' "$HKEYF")
+  ed25519_public: $(cut -d' ' -f1,2 "$HKEYF.pub")
 EOF
+  )
   printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$DIR/meta-data"
-  genisoimage -quiet -o "$DIR/seed.iso" -V cidata -J -r "$DIR/user-data" "$DIR/meta-data"
+  ( umask 077; genisoimage -quiet -o "$DIR/seed.iso" -V cidata -J -r "$DIR/user-data" "$DIR/meta-data" )
+  rm -f "$DIR/user-data"   # it holds the host key; the seed disc keeps a copy for cloud-init
   domain_xml "" "<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$DIR/seed.iso'/><target dev='sda' bus='sata'/><readonly/></disk>" > "$DIR/domain.xml"
   virsh define "$DIR/domain.xml" >/dev/null && virsh start "$NAME" >/dev/null
 }
@@ -217,17 +242,26 @@ poweroff
 %end
 %post
 echo 'admin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/admin && chmod 440 /etc/sudoers.d/admin
+umask 077
+cat > /etc/ssh/ssh_host_ed25519_key <<'KEY'
+$(cat "$HKEYF")
+KEY
+echo '$(cut -d' ' -f1,2 "$HKEYF.pub")' > /etc/ssh/ssh_host_ed25519_key.pub
+chmod 644 /etc/ssh/ssh_host_ed25519_key.pub; restorecon /etc/ssh/ssh_host_ed25519_key*
 %end
 EOF
   )
-  genisoimage -quiet -o "$DIR/oemdrv.iso" -V OEMDRV -J -r "$DIR/ks"; rm -rf "$DIR/ks"
+  # The install files hold the host key and, for boot ISOs, the activation key: removed however
+  # the install ends.
+  trap 'virsh destroy "$NAME" >/dev/null 2>&1; rm -rf "$DIR/ks" "$DIR/oemdrv.iso" "$DIR/vmlinuz" "$DIR/initrd.img" "$DIR/install.xml"' EXIT
+  ( umask 077; genisoimage -quiet -o "$DIR/oemdrv.iso" -V OEMDRV -J -r "$DIR/ks" ); rm -rf "$DIR/ks"
   qemu-img create -q -f qcow2 "$DIR/disk.qcow2" "$DISK"
   local cds="<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$IMAGE'/><target dev='sda' bus='sata'/><readonly/></disk>
     <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$DIR/oemdrv.iso'/><target dev='sdb' bus='sata'/><readonly/></disk>"
   domain_xml "<kernel>$DIR/vmlinuz</kernel><initrd>$DIR/initrd.img</initrd><cmdline>inst.stage2=hd:LABEL=$lesc inst.ks=hd:LABEL=OEMDRV:/ks.cfg inst.text console=ttyS0</cmdline>" "$cds" > "$DIR/install.xml"
   virsh create "$DIR/install.xml" >/dev/null       # transient: gone after the installer powers off
   local t=0; while virsh domstate "$NAME" >/dev/null 2>&1; do sleep 15; t=$((t+15)); [ $t -lt 3600 ] || die "installer did not finish within an hour (virsh console $NAME)"; done
-  rm -f "$DIR/oemdrv.iso" "$DIR/vmlinuz" "$DIR/initrd.img" "$DIR/install.xml"
+  rm -f "$DIR/oemdrv.iso" "$DIR/vmlinuz" "$DIR/initrd.img" "$DIR/install.xml"; trap - EXIT
   domain_xml "" "" > "$DIR/domain.xml"
   virsh define "$DIR/domain.xml" >/dev/null && virsh start "$NAME" >/dev/null
 }
@@ -235,7 +269,9 @@ EOF
 # ---------- helpers for talking to the VM ----------
 # Every ssh and scp to the VM uses -F none: the desktop's ~/.ssh/config and ssh_config.d are not
 # read, so a "Host *" block there can't forward the SSH agent or X11, or add a ProxyCommand.
-load_port() { PORT=$(cat "$DIR/port"); SSH=(ssh -F none -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KH" -p "$PORT"); }
+# The VM's host key is pinned in known_hosts when it is created: StrictHostKeyChecking=yes.
+SSHOPT=(-F none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519)
+load_port() { PORT=$(cat "$DIR/port"); SSH=(ssh "${SSHOPT[@]}" -i "$KEYF" -o ConnectTimeout=5 -o UserKnownHostsFile="$KH" -p "$PORT"); }
 vm()   { "${SSH[@]}" admin@127.0.0.1 "$@"; }
 vmsh() { "${SSH[@]}" admin@127.0.0.1 "sudo bash -s $(printf '%q ' "$@")"; }   # run a root script from stdin, args quoted
 wait_vm() {
@@ -250,11 +286,14 @@ base_setup() {
     [ -n "$RHSM" ] || die "RHEL needs --rhsm FILE for registration and updates"
     { printf 'o=%q\nk=%q\n' "$(sed -n 's/^org=//p' "$RHSM")" "$(sed -n 's/^key=//p' "$RHSM")"
       # shellcheck disable=SC2016  # expanded by the guest's shell, from the o= and k= lines above
-      echo 'subscription-manager status >/dev/null 2>&1 || subscription-manager register --org "$o" --activationkey "$k" >/dev/null'; } | vmsh
+      echo 'subscription-manager status >/dev/null 2>&1 || subscription-manager register --org "$o" --activationkey "$k" >/dev/null'
+      # A boot ISO install had the key in its kickstart: Anaconda keeps copies of that and logs.
+      # shellcheck disable=SC2016  # expanded by the guest's shell
+      echo 'grep -rlsF -- "$k" /root /var/log/anaconda /var/log/anaconda.* 2>/dev/null | xargs -r shred -u'; } | vmsh
   fi
   local auto_pkg=dnf5-plugin-automatic auto_timer=dnf5-automatic.timer
   [ "$OS" = rhel ] && auto_pkg=dnf-automatic auto_timer=dnf-automatic.timer
-  vmsh "$auto_pkg" "$auto_timer" "$(cat "$KEYF.pub")" <<'EOF'
+  vmsh "$auto_pkg" "$auto_timer" "$(cat "$BKEYF.pub")" <<'EOF'
 set -e
 grep -q '^install_weak_deps' /etc/dnf/dnf.conf || echo 'install_weak_deps=False' >> /etc/dnf/dnf.conf
 dnf -y -q upgrade
@@ -269,6 +308,20 @@ restorecon -R /home/browser 2>/dev/null || true
 touch /var/lib/vm-browser-base
 EOF
   reboot_vm
+}
+
+# VMs made by older versions let the launchers in with the admin key: give the browser account
+# its own key, and rewrite their launchers below as browsers are (re)installed.
+ensure_browser_key() {
+  [ -f "$BKEYF" ] && [ -f "$DIR/browser-key-installed" ] && return 0
+  [ -f "$BKEYF" ] || ssh-keygen -q -t ed25519 -N '' -C "vm-browser-$NAME-browser" -f "$BKEYF"
+  vmsh "$(cat "$BKEYF.pub")" <<'EOF'
+set -e
+printf '%s\n' "$1" > /home/browser/.ssh/authorized_keys
+chown browser: /home/browser/.ssh/authorized_keys; chmod 600 /home/browser/.ssh/authorized_keys
+restorecon -R /home/browser/.ssh 2>/dev/null || true
+EOF
+  : > "$DIR/browser-key-installed"
 }
 
 # ---------- browsers ----------
@@ -323,10 +376,15 @@ install_rpm() {
   safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg") in $f"
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
-  scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
-  vmsh <<'EOF'
+  # Copied into a new folder only admin can open, not a fixed name in a shared folder, where the
+  # browser user could plant a file of its own for root to install. (On disk: /tmp is in RAM.)
+  local tmpd; tmpd=$(vm 'mktemp -d -p /var/tmp vm-browser.XXXXXXXX') || tmpd=""
+  safe_path "$tmpd" || die "could not make a folder for the RPM in the VM"
+  scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" "admin@127.0.0.1:$tmpd/browser.rpm"
+  vmsh "$tmpd" <<'EOF'
 set -e
-dnf -y -q install /var/tmp/vm-browser.rpm; rm -f /var/tmp/vm-browser.rpm
+[ "$(stat -c '%U %a' "$1")" = "admin 700" ] || { echo "unexpected owner or mode of $1" >&2; exit 1; }
+dnf -y -q install "$1/browser.rpm"; rm -rf "$1"
 systemctl list-unit-files pab-protection.service >/dev/null 2>&1 && systemctl restart pab-protection || true
 EOF
   make_launcher "$pkg"
@@ -363,13 +421,15 @@ write_launcher() {
   {
     echo '#!/bin/bash'
     echo "# vm-browser launcher. Generated; rerun vm-browser.sh to change it."
-    printf 'VM=%q KEY=%q KH=%q PORT=%q EXE=%q\n' "$NAME" "$KEYF" "$KH" "$PORT" "$exe"
+    printf 'VM=%q KEY=%q KH=%q PORT=%q EXE=%q\n' "$NAME" "$BKEYF" "$KH" "$PORT" "$exe"
     cat <<'LAUNCHER'
 export LIBVIRT_DEFAULT_URI=qemu:///session
-SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
+SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
-exec waypipe --no-gpu "${SSH[@]}" "$EXE" "$@"
+# ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
+CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
+exec waypipe --no-gpu "${SSH[@]}" "$CMD"
 LAUNCHER
   } > "$bin"
   chmod 755 "$bin"
@@ -387,9 +447,21 @@ LAUNCHER
   echo "Launcher: '$name ($NAME)' in your app menu ($bin)"
 }
 
+# fetch_icon GUEST-PATH ID: copies a PNG icon from the VM to the desktop's icon folder as ID.png.
+fetch_icon() {
+  local tmp dest="$HOME/.local/share/icons/hicolor/256x256/apps"
+  tmp=$(mktemp)
+  if vm "head -c 524289 -- $(printf '%q' "$1")" > "$tmp" 2>/dev/null && [ "$(stat -c %s "$tmp")" -le 524288 ] \
+     && [ "$(head -c 8 "$tmp" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ]; then
+    mkdir -p "$dest"; mv "$tmp" "$dest/$2.png"; chmod 644 "$dest/$2.png"
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
+
 # Builds the launcher from the package's own .desktop file: name, command, icon, window class.
 make_launcher() {
-  local pkg=$1 info name exe icon wm id ext dest
+  local pkg=$1 info name exe icon wm id
   safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg")"
   info=$(vmsh "$pkg" <<'EOF'
 d=$(rpm -ql "$1" | grep -E '^/usr/share/applications/[^/]+\.desktop$' | head -1)
@@ -398,7 +470,7 @@ get() { sed -n "0,/^\[Desktop Entry\]/d; /^\[/q; s/^$1=//p" "$d" | head -1; }
 icon=$(get Icon)
 case "$icon" in
   /*) p=$icon;;
-  *) p=$(ls /usr/share/icons/hicolor/{256x256,512x512,192x192,128x128,scalable,96x96,64x64,48x48}/apps/"$icon".{png,svg} /usr/share/pixmaps/"$icon".{png,svg} 2>/dev/null | head -1);;
+  *) p=$(ls /usr/share/icons/hicolor/{256x256,512x512,192x192,128x128,96x96,64x64,48x48}/apps/"$icon".png /usr/share/pixmaps/"$icon".png 2>/dev/null | head -1);;
 esac
 exe=$(get Exec | awk '{print $1}')
 wm=$(get StartupWMClass)
@@ -408,14 +480,9 @@ EOF
   { read -r name; read -r exe; read -r icon; read -r wm; } <<< "$info" || true   # $(...) drops empty last lines
   [ -n "$exe" ] || die "could not find how to start $pkg"
   id="vmb-$NAME-$pkg"
-  # Only a plain .png or .svg path is fetched, and the file name on the desktop is fixed here.
-  if [ -n "$icon" ] && safe_path "$icon" && [[ $icon =~ \.(png|svg)$ ]]; then
-    ext=${icon##*.}; dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
-    mkdir -p "$dest"
-    scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext" || icon=""
-  else
-    icon=""
-  fi
+  # Icons are parsed by the desktop's image loaders, so only PNG files up to 512 KiB are taken
+  # (no SVG), checked by their signature, under a file name chosen here.
+  if [ -n "$icon" ] && safe_path "$icon" && [[ $icon == *.png ]] && fetch_icon "$icon" "$id"; then :; else icon=""; fi
   write_launcher "$pkg" "$name" "$exe" "$icon" "$wm"
   gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 }
@@ -431,6 +498,7 @@ main() {
   [ "$(virsh domstate "$NAME")" = running ] || virsh start "$NAME" >/dev/null
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
+  ensure_browser_key
   for b in "${BROWSERS[@]}"; do install_browser "$b"; done
   for r in "${RPMS[@]}"; do install_rpm "$r"; done
   log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"

@@ -26,7 +26,8 @@ your desktop (Wayland)                             VM (libvirt user session)
 ```
 
 - **Networking:** the VM uses `passt`. Its SSH is forwarded to `127.0.0.1` only, so it isn't reachable from your network.
-- **Users:** the browser runs as an unprivileged `browser` user. Admin work uses a separate `admin` account with an SSH key and no password.
+- **Users:** the browser runs as an unprivileged `browser` user, which the launchers reach with their own SSH key. Admin work uses a separate `admin` account with a different key and no password.
+- **Host key:** the script makes the VM's SSH host key itself and pins it in `known_hosts` before the VM first boots. Nothing else that might be listening on the local port is trusted with commands or credentials.
 - **SSH:** every connection to the VM, including the launchers', uses `ssh -F none`, so your `~/.ssh/config` and `/etc/ssh/ssh_config.d` don't apply. A `Host *` block there can't forward your SSH agent or X11 display into the VM.
 - **Repositories:** each browser comes from its vendor's signed repository (Google, Brave, Palo Alto Networks), or from Fedora/EPEL for Chromium and Firefox.
 - **Launchers:** each is built from the package's own `.desktop` file (name, command, icon and window class), so it appears in your app menu with the browser's real icon. The VM's answers are treated as hostile: the start command must be a plain path (letters, digits and `._+-/`) or the launcher isn't written, it goes into the launcher as a quoted value rather than code, and names are stripped of control characters.
@@ -70,7 +71,7 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 | `--image PATH` | Fedora: downloaded | A `.qcow2` cloud/KVM image or an installer `.iso` |
 | `--rhsm FILE` | — | RHEL registration file (`org=…` and `key=…`) |
 | `--rpm FILE` | — | Install a browser from a local RPM (repeatable) |
-| `--name NAME` | `<os><version>-browsers` | VM name; use different names for separate VMs |
+| `--name NAME` | `<os><version>-browsers` | VM name (letters, digits and hyphens); use different names for separate VMs |
 | `--port N` | first free from 2230 | Local SSH port |
 | `--memory GiB` / `--cpus N` / `--disk SIZE` | 4 / 4 / 12G | VM size (the disk is thin-provisioned) |
 
@@ -80,7 +81,7 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 
 - **Open a browser:** use its menu entry. The VM starts automatically.
 - **Stop the VM:** `virsh -c qemu:///session shutdown <vm>`
-- **Admin shell:** `ssh -i ~/.local/share/vm-browser/<vm>/id_ed25519 -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
+- **Admin shell:** `ssh -F none -i ~/.local/share/vm-browser/<vm>/id_ed25519 -o UserKnownHostsFile=~/.local/share/vm-browser/<vm>/known_hosts -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
 - **Remove a VM:**
   ```bash
   virsh -c qemu:///session destroy <vm>; virsh -c qemu:///session undefine <vm> --remove-all-storage
@@ -90,9 +91,10 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 ## Notes
 
 - **Prisma Access Browser** installs a root service that loads eBPF hooks to protect the browser's processes. If the kernel's security-module list lacks `bpf`, its installer rewrites the boot command line in a way that drops SELinux. The script checks for `bpf` first and refuses to continue without it. Current Fedora and RHEL kernels include it.
+- **Images and RPMs you supply aren't verified by the script:** `--image` files (all RHEL images, and Fedora ISOs) and `--rpm` packages are used as they are. Check them first, for example against the vendor's published SHA-256 checksum (`sha256sum FILE`) or with `rpm -K FILE` for an RPM signed with a key you have imported.
 - **Fedora image downloads** are used only if the release's `CHECKSUM` file is signed by that release's key, and only the signed part of the file is read. The key fingerprints for Fedora 42–47 are pinned in the script (`FEDORA_KEYS`). For any other release, the script stops: pass `--image` with an image you've verified, or add the release's key.
 - **Chromium on RHEL** comes from EPEL, so the script enables CodeReady Builder and EPEL.
-- **ISO installs** boot the installer kernel straight from the ISO and supply a kickstart on a second virtual disc labelled `OEMDRV`, so `virt-install` isn't needed. DVD ISOs install from the disc. Fedora netinstall ISOs use Fedora's mirrors through a metalink, which pins the hash of the repository metadata (and so of every package), and RHEL boot ISOs register with the activation key during installation.
+- **ISO installs** boot the installer kernel straight from the ISO and supply a kickstart on a second virtual disc labelled `OEMDRV`, so `virt-install` isn't needed. DVD ISOs install from the disc. Fedora netinstall ISOs use Fedora's mirrors through a metalink, which pins the hash of the repository metadata (and so of every package), and RHEL boot ISOs register with the activation key during installation. The install files that hold the key are deleted however the install ends, and the copies Anaconda leaves in the VM are removed during setup.
 - **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Their reboots close any open browser window.
 - **Display:** the browser renders on the VM's CPU, since there's no GPU passthrough. That's fine for documents and web apps, but not for games or heavy video.
 

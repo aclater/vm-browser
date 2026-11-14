@@ -9,6 +9,12 @@ NAME=${E2E_NAME:-vmb-e2e-$$}
 export LIBVIRT_DEFAULT_URI=qemu:///session
 D="$HOME/.local/share/vm-browser/$NAME"
 cleanup() {
+  # A RHEL VM is unregistered first, so it doesn't stay listed in the Red Hat account.
+  if [ -f "$D/id_ed25519" ] && [ -f "$D/port" ]; then
+    ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+      -o UserKnownHostsFile="$D/known_hosts" -o ConnectTimeout=5 -p "$(cat "$D/port")" admin@127.0.0.1 \
+      'command -v subscription-manager >/dev/null && sudo subscription-manager unregister' >/dev/null 2>&1 || true
+  fi
   virsh destroy "$NAME" >/dev/null 2>&1 || true
   virsh undefine "$NAME" --remove-all-storage >/dev/null 2>&1 || true
   rm -rf "$D" "$HOME/.local/bin/vmb-$NAME-"* "$HOME/.local/share/applications/vmb-$NAME-"*.desktop \
@@ -46,6 +52,21 @@ if [ -n "${E2E_HOSTILE_SSH_CONFIG:-}" ]; then
   # shellcheck disable=SC2016  # expanded by the guest's shell
   [ -z "$("${SSH[@]}" 'echo "${SSH_AUTH_SOCK:-}${DISPLAY:-}"')" ] || fail "agent or X11 forwarded to the guest"
   pass "a hostile ~/.ssh/config (agent and X11 forwarding, RemoteCommand) is ignored"
+fi
+
+# #7: the VM's host key is pinned, and the admin and browser accounts have separate keys.
+A=(ssh -F none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" -p "$(cat "$D/port")")
+{ [ "$(wc -l < "$D/known_hosts")" = 1 ] && grep -q ' ssh-ed25519 ' "$D/known_hosts"; } || fail "known_hosts is not one pinned ed25519 key"
+"${A[@]}" -i "$D/id_ed25519" admin@127.0.0.1 true || fail "admin key refused"
+"${A[@]}" -i "$D/id_ed25519" browser@127.0.0.1 true 2>/dev/null && fail "the admin key opens the browser account"
+"${A[@]}" -i "$D/browser_ed25519" admin@127.0.0.1 true 2>/dev/null && fail "the browser key opens the admin account"
+pass "host key pinned; admin and browser keys are separate"
+if [ -n "${E2E_RHSM:-}" ]; then   # RHEL: the activation key must not be left anywhere in the VM
+  # shellcheck disable=SC2016  # expanded by the guest's shell; the key comes on stdin
+  left=$(sed -n 's/^key=//p' "$E2E_RHSM" | "${A[@]}" -i "$D/id_ed25519" admin@127.0.0.1 \
+    'sudo bash -c '"'"'k=$(cat); find / -xdev -type f -size -64M -print0 2>/dev/null | xargs -0 grep -lsF -- "$k"'"'"'') || true
+  [ -z "$left" ] || fail "the activation key is still in the VM: $left"
+  pass "the activation key is nowhere in the VM's file system"
 fi
 
 # #1: a package whose .desktop Exec carries shell code must not get a launcher. Needs rpmbuild.
