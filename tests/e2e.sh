@@ -146,15 +146,17 @@ fi
 
 # #9: when the last launcher closes, the VM shuts down; the next launch starts it again, and
 # the network guard is back after that boot. "firefox --version" opens no window.
-# launch ARGS: the launcher, limited to 5 minutes; on a timeout, show what it was waiting for.
+# launch ARGS: the launcher (traced), limited to 5 minutes. A watchdog prints the process tree
+# and the trace if it is still running after 6 minutes, whatever is holding it up.
 launch() {
-  local out rc; out=$(mktemp)
-  timeout 300 "$L" "$@" > "$out" 2>&1; rc=$?
-  if [ $rc = 124 ]; then
-    echo "--- launcher timed out; its output:" >&2; cat "$out" >&2
-    echo "--- processes:" >&2; ps -eo pid,ppid,etime,args --forest >&2 || true
-  fi
-  cat "$out"; rm -f "$out"; return $rc
+  local out rc dog; out=$(mktemp)
+  echo "E2E step: launcher $* ($(date -u +%T))" >&2
+  ( sleep 360; echo "--- watchdog: still running after 6 minutes; trace so far:" >&2; tail -40 "$out" >&2
+    echo "--- processes:" >&2; ps -eo pid,ppid,stat,etime,args --forest >&2 ) & dog=$!
+  timeout -k 10 300 bash -x "$L" "$@" > "$out" 2>&1; rc=$?
+  kill "$dog" 2>/dev/null || true
+  if [ $rc != 0 ]; then echo "--- launcher exit $rc; last of its trace:" >&2; tail -40 "$out" >&2; fi
+  grep -v '^+' "$out"; rm -f "$out"; return $rc
 }
 launch --version >/dev/null || fail "the launcher could not run firefox --version"
 for _ in $(seq 1 60); do [ "$(virsh domstate "$NAME")" = "shut off" ] && break; sleep 3; done
