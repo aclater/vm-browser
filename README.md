@@ -87,7 +87,7 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 ### Daily use
 
 - **Open a browser:** use its menu entry. The VM starts automatically.
-- **Close it:** when the last browser window of a VM closes, the VM shuts down, after any update that is running in it has finished. To keep it running, start the launcher with `VMB_KEEP_RUNNING=1`, or stop it by hand: `virsh -c qemu:///session shutdown <vm>`.
+- **Close it:** when the last browser window of a VM closes, the VM shuts down, after any update that is running in it has finished. A VM that hasn't shut down two minutes after being asked is switched off (a compromised VM could ignore the request). To keep it running, start the launcher with `VMB_KEEP_RUNNING=1`, or stop it by hand: `virsh -c qemu:///session shutdown <vm>`.
 - **Admin shell:** `ssh -F none -i ~/.local/share/vm-browser/<vm>/id_ed25519 -o UserKnownHostsFile=~/.local/share/vm-browser/<vm>/known_hosts -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
 - **Remove a VM:**
   ```bash
