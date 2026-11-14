@@ -376,10 +376,15 @@ install_rpm() {
   safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg") in $f"
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
-  scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
-  vmsh <<'EOF'
+  # Copied into a new folder only admin can open, not a fixed name in a shared folder, where the
+  # browser user could plant a file of its own for root to install.
+  local tmpd; tmpd=$(vm 'mktemp -d') || tmpd=""
+  safe_path "$tmpd" || die "could not make a folder for the RPM in the VM"
+  scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" "admin@127.0.0.1:$tmpd/browser.rpm"
+  vmsh "$tmpd" <<'EOF'
 set -e
-dnf -y -q install /var/tmp/vm-browser.rpm; rm -f /var/tmp/vm-browser.rpm
+[ "$(stat -c '%U %a' "$1")" = "admin 700" ] || { echo "unexpected owner or mode of $1" >&2; exit 1; }
+dnf -y -q install "$1/browser.rpm"; rm -rf "$1"
 systemctl list-unit-files pab-protection.service >/dev/null 2>&1 && systemctl restart pab-protection || true
 EOF
   make_launcher "$pkg"
