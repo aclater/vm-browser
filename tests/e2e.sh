@@ -194,3 +194,38 @@ VMB_KEEP_RUNNING=1 launch --version >/dev/null || true
 ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" \
   -p "$(cat "$D/port")" admin@127.0.0.1 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
 pass "the launcher starts the VM again; the network guard is loaded at boot"
+
+# #9, disposable mode: the VM's disk becomes a read-only base, and each session runs on an
+# overlay that is replaced when the VM stops. Files a session writes, as the browser user and as
+# root (as a compromise would), are gone in the next session; runs of the script (maintenance)
+# write into the base, and refuse while the VM runs.
+stopped() { for _ in $(seq 1 100); do [ "$(virsh domstate "$NAME")" = "shut off" ] && return 0; sleep 3; done; return 1; }
+virsh shutdown "$NAME" >/dev/null; stopped || fail "the VM did not shut down"
+./vm-browser.sh --name "$NAME" --disposable >/dev/null || fail "the run with --disposable failed"
+[ "$(stat -c %a "$D/base.qcow2" 2>/dev/null)" = 400 ] || fail "--disposable left no read-only base.qcow2"
+qemu-img info -U "$D/disk.qcow2" | grep -qx "backing file: $D/base.qcow2" || fail "disk.qcow2 is not an overlay on the base"
+[ "$(virsh domstate "$NAME")" = "shut off" ] || fail "the VM still runs after the maintenance run"
+pass "--disposable: the disk became a read-only base, under an empty overlay, and the VM is shut off"
+VMB_KEEP_RUNNING=1 launch --version >/dev/null || fail "the launcher could not start the disposable VM"
+"${SSH[@]}" 'touch ~/planted' || fail "could not write a file as the browser user"
+"${ASSH[@]}" 'sudo touch /etc/planted && sudo systemctl disable --quiet vm-browser-netguard.service' || fail "could not change the VM as root"
+"${ASSH[@]}" 'grep -qx "reboot = never" /etc/dnf/automatic.conf' || fail "the maintenance run's change is not in the session (base not written)"
+if ./vm-browser.sh --name "$NAME" --update >/dev/null 2>&1; then fail "a maintenance run went ahead while the VM was running"; fi
+pass "a maintenance run refuses while the VM runs; the session starts with the base's changes"
+launch --version >/dev/null || fail "the launcher failed"
+stopped || fail "the disposable VM did not shut down after its last launcher closed"
+VMB_KEEP_RUNNING=1 launch --version >/dev/null || fail "the launcher could not start the disposable VM again"
+"${SSH[@]}" 'test -e ~/planted' && fail "the browser user's file survived the session"
+"${ASSH[@]}" 'test -e /etc/planted' && fail "root's file survived the session"
+"${ASSH[@]}" 'systemctl is-enabled --quiet vm-browser-netguard.service && sudo nft list table inet vm_browser >/dev/null' \
+  || fail "the network guard is not back after root disabled it in the last session"
+pass "the next session starts clean: the browser user's and root's changes are gone, the guard is back"
+virsh shutdown "$NAME" >/dev/null; stopped || fail "the VM did not shut down"
+before=$(stat -c %Y "$D/base.qcow2")
+./vm-browser.sh --name "$NAME" --update >/dev/null || fail "the --update run failed"
+{ [ "$(stat -c %Y "$D/base.qcow2")" != "$before" ] && [ "$(stat -c %a "$D/base.qcow2")" = 400 ]; } || fail "--update did not write the base"
+[ "$(virsh domstate "$NAME")" = "shut off" ] || fail "the VM still runs after --update"
+pass "--update installs updates into the base and leaves the VM shut off"
+./vm-browser.sh --name "$NAME" --persistent >/dev/null || fail "the run with --persistent failed"
+{ [ ! -e "$D/base.qcow2" ] && ! qemu-img info -U "$D/disk.qcow2" | grep -q '^backing file:'; } || fail "--persistent left an overlay"
+pass "--persistent: the base is the VM's disk again"

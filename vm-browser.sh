@@ -24,11 +24,18 @@ Options:
                        desktop's loopback and its own addresses (taken at setup)
                        stay blocked either way. A later run without --lan blocks
                        the LAN again
+  --disposable         From now on, start every session from the installed system and
+                       discard the session's changes when the VM stops: downloads,
+                       browser profiles and sign-ins are not kept. The VM must be
+                       shut off
+  --persistent         Keep the VM's disk between sessions again (the default)
+  --update             Install the guest's updates now (for a disposable VM: into its
+                       installed system). Needs no browser
   -h, --help
 EOF
 }
 
-OS=fedora VER="" IMAGE="" RHSM="" NAME="" PORT="" MEM=4 CPUS=4 DISK=12G LAN=0
+OS=fedora VER="" IMAGE="" RHSM="" NAME="" PORT="" MEM=4 CPUS=4 DISK=12G LAN=0 DISPOSABLE="" UPDATE=0
 BROWSERS=() RPMS=()
 parse_args() {
 while [ $# -gt 0 ]; do
@@ -37,13 +44,15 @@ while [ $# -gt 0 ]; do
     --rhsm) RHSM=$(realpath "$2"); shift 2;; --rpm) RPMS+=("$(realpath "$2")"); shift 2;;
     --name) NAME=$2; shift 2;; --port) PORT=$2; shift 2;; --memory) MEM=$2; shift 2;;
     --cpus) CPUS=$2; shift 2;; --disk) DISK=$2; shift 2;; --lan) LAN=1; shift;; -h|--help) usage; exit 0;;
+    --disposable) DISPOSABLE=1; shift;; --persistent) DISPOSABLE=0; shift;; --update) UPDATE=1; shift;;
     chrome|chromium|brave|firefox|prisma) BROWSERS+=("$1"); shift;;
     *) echo "Unknown argument: $1"; usage; exit 1;;
   esac
 done
 case "$OS" in fedora) VER=${VER:-44};; rhel) VER=${VER:-10};; *) echo "--os must be fedora or rhel"; exit 1;; esac
 NAME=${NAME:-$OS$VER-browsers}
-[ ${#BROWSERS[@]} -gt 0 ] || [ ${#RPMS[@]} -gt 0 ] || { echo "Choose at least one browser or --rpm."; usage; exit 1; }
+[ ${#BROWSERS[@]} -gt 0 ] || [ ${#RPMS[@]} -gt 0 ] || [ -n "$DISPOSABLE" ] || [ "$UPDATE" = 1 ] \
+  || { echo "Choose at least one browser or --rpm (or --update, --disposable, --persistent for an existing VM)."; usage; exit 1; }
 check_options
 }
 
@@ -329,6 +338,123 @@ EOF
   : > "$DIR/browser-key-installed"
 }
 
+# ---------- disposable VMs (#9) ----------
+# A disposable VM keeps its installed system in base.qcow2, read-only, and runs each session on
+# disk.qcow2, an empty overlay on top of it. Its launchers make a new overlay before they start
+# the VM and again after it stops, so nothing a session changes survives the session: a
+# compromise included. Runs of this script (adding browsers, --update) are maintenance: they
+# boot from the base with no browser open, then shut the VM down and write their changes into
+# the base. While one runs, launchers refuse to start. While the changes are being written into
+# the base, $DIR/committing exists: an interrupted write leaves the base incomplete, and only
+# base and overlay together are whole, so nothing replaces the overlay until a run has finished
+# the write.
+is_disposable() { [ -f "$DIR/base.qcow2" ]; }
+# fresh_overlay: replaces disk.qcow2 by an empty overlay on the base. The VM must be shut off.
+# A saved memory state (virsh managedsave) is dropped too: it belongs to the old overlay.
+fresh_overlay() {
+  [ ! -e "$DIR/committing" ] || { echo "the overlay of $NAME holds changes not yet written into its base" >&2; return 1; }
+  virsh managedsave-remove "$NAME" >/dev/null 2>&1 || true
+  qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/base.qcow2" "$DIR/disk.qcow2.new.$$" \
+    && mv -f "$DIR/disk.qcow2.new.$$" "$DIR/disk.qcow2"
+}
+# commit_overlay: writes the overlay's changes into the base. Run again after an interruption,
+# it writes them all again, which completes the base.
+commit_overlay() {
+  : > "$DIR/committing"
+  chmod 600 "$DIR/base.qcow2"
+  qemu-img commit -q -d "$DIR/disk.qcow2" || return 1
+  chmod 400 "$DIR/base.qcow2"
+  rm -f "$DIR/committing"
+}
+# run_dir: the launchers' folder for this VM (session files and the lock), as they compute it.
+run_dir() {
+  local base="${XDG_RUNTIME_DIR:-/tmp/vm-browser-$(id -u)}"
+  RUN="$base/vm-browser-$NAME"
+  [ -d "$base" ] || mkdir -m 700 "$base"; [ -d "$RUN" ] || mkdir -m 700 "$RUN"
+  [ -O "$base" ] && [ -O "$RUN" ] && [ ! -L "$base" ] && [ ! -L "$RUN" ] || die "$RUN is not ours"
+}
+# open_sessions: true if a launcher of this VM is open (files of dead ones don't count).
+open_sessions() {
+  local f; for f in "$RUN"/session.*; do [ -e "$f" ] && kill -0 "${f##*.}" 2>/dev/null && return 0; done
+  return 1
+}
+# begin_maintenance: for a VM that is, or is becoming, disposable. It must be shut off with no
+# browser open; launchers are held off until the run ends. Leaving disposable mode (--persistent)
+# makes the base the VM's disk again.
+MAINT=""
+begin_maintenance() {
+  [ "$WANT_DISPOSABLE" = 1 ] || is_disposable || return 0
+  run_dir
+  exec 8>"$RUN/lock"; flock -w 120 8 || die "could not lock $RUN/lock"
+  if open_sessions; then die "VM $NAME has a browser open. Close its browsers (the VM then shuts down) and run this again"; fi
+  [ "$(virsh domstate "$NAME" 2>/dev/null)" = "shut off" ] \
+    || die "VM $NAME is running. Close its browsers, or run: virsh -c qemu:///session shutdown $NAME. Then run this again"
+  echo $$ > "$RUN/maintenance"
+  trap abort_maintenance EXIT
+  # The lock is held until the overlay is in place, so a launcher that is closing can't replace
+  # it under this run (launchers also leave the VM alone while the maintenance file is live).
+  if [ -e "$DIR/committing" ]; then
+    log "Finishing the interrupted save of VM $NAME's installed system"
+    commit_overlay || die "could not write the changes into $DIR/base.qcow2"
+  fi
+  if [ "$WANT_DISPOSABLE" = 0 ]; then
+    log "Making VM $NAME persistent: its disk is kept between sessions again"
+    rm -f "$DIR/disk.qcow2"; chmod 600 "$DIR/base.qcow2"; mv "$DIR/base.qcow2" "$DIR/disk.qcow2"
+    rm -f "$RUN/maintenance"; trap - EXIT; flock -u 8
+    return 0
+  fi
+  if is_disposable; then fresh_overlay || die "could not make an overlay on $DIR/base.qcow2"; fi
+  flock -u 8
+  MAINT=1
+}
+# A run that fails discards what it changed in a disposable VM, unless it failed while writing
+# them into the base: then the overlay is kept for the next run to finish the write.
+abort_maintenance() {
+  if [ -e "$DIR/committing" ]; then
+    echo "The installed system of VM $NAME was not saved completely. Run vm-browser.sh --name $NAME --update to finish it; until then its launchers don't start." >&2
+  elif is_disposable; then
+    virsh destroy "$NAME" >/dev/null 2>&1; fresh_overlay
+  fi
+  rm -f "$RUN/maintenance"
+}
+# end_maintenance: waits for a running automatic update (so it isn't cut off), shuts the VM down
+# and writes this run's changes into the base; a VM becoming disposable gets its disk as base.
+end_maintenance() {
+  [ -n "$MAINT" ] || return 0
+  log "Shutting VM $NAME down and saving this run's changes as its installed system"
+  for _ in $(seq 1 360); do   # up to an hour
+    vm 'systemctl is-active dnf5-automatic.service dnf-automatic.service | grep -qxE "activating|active|deactivating|reloading"' 2>/dev/null || break
+    sleep 10
+  done
+  virsh shutdown "$NAME" >/dev/null
+  local t=0
+  until [ "$(virsh domstate "$NAME" 2>/dev/null)" = "shut off" ]; do
+    sleep 2; t=$((t+2)); [ $t -lt 300 ] || die "VM $NAME did not shut down; this run's changes are discarded"
+  done
+  # A launcher written by an older version doesn't wait for this run: a browser it opened ran
+  # in this VM, and its session must not become the installed system.
+  flock -w 120 8 || die "could not lock $RUN/lock"
+  if open_sessions; then die "a browser of VM $NAME was opened during this run (an older launcher?); this run's changes are discarded"; fi
+  if is_disposable; then
+    commit_overlay || die "could not write the changes into $DIR/base.qcow2"
+  else
+    mv "$DIR/disk.qcow2" "$DIR/base.qcow2"; chmod 400 "$DIR/base.qcow2"
+  fi
+  fresh_overlay || die "could not make an overlay on $DIR/base.qcow2"
+  flock -u 8
+  rm -f "$RUN/maintenance"; trap - EXIT
+}
+# setup_updates: automatic updates reboot a persistent VM when they need to. In a disposable VM
+# they are lost at shutdown anyway, so they never reboot it (that would close the browsers in
+# every session until the base is updated).
+setup_updates() {
+  local r=when-needed; [ "$WANT_DISPOSABLE" = 1 ] && r=never
+  vmsh "$r" <<'EOF'
+sed -i "s/^reboot = .*/reboot = $1/" /etc/dnf/automatic.conf
+EOF
+  if [ "$UPDATE" = 1 ]; then log "Installing updates"; vmsh <<< 'dnf -y -q upgrade'; fi
+}
+
 # ---------- network guard ----------
 # passt hands the guest's traffic for the gateway address to the desktop's 127.0.0.1, and its
 # traffic for any of the desktop's other addresses (libvirt and container bridges, VPNs, other
@@ -533,7 +659,7 @@ set -e
 dnf -y -q install "$1/browser.rpm"; rm -rf "$1"
 systemctl list-unit-files pab-protection.service >/dev/null 2>&1 && systemctl restart pab-protection || true
 EOF
-  make_launcher "$pkg"
+  make_launcher "$pkg"; PKG=$pkg
 }
 
 # ---------- launchers ----------
@@ -567,7 +693,7 @@ write_launcher() {
   {
     echo '#!/bin/bash'
     echo "# vm-browser launcher. Generated; rerun vm-browser.sh to change it."
-    printf 'VM=%q KEY=%q KH=%q PORT=%q EXE=%q\n' "$NAME" "$BKEYF" "$KH" "$PORT" "$exe"
+    printf 'VM=%q DIR=%q KEY=%q KH=%q PORT=%q EXE=%q\n' "$NAME" "$DIR" "$BKEYF" "$KH" "$PORT" "$exe"
     cat <<'LAUNCHER'
 export LIBVIRT_DEFAULT_URI=qemu:///session
 SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
@@ -576,16 +702,49 @@ BASE="${XDG_RUNTIME_DIR:-/tmp/vm-browser-$(id -u)}"; RUN="$BASE/vm-browser-$VM"
 mkdir -p -m 700 "$BASE" "$RUN"
 # Only folders of our own: in /tmp another user could have made them first.
 [ -O "$BASE" ] && [ -O "$RUN" ] && [ ! -L "$BASE" ] && [ ! -L "$RUN" ] || { echo "vm-browser: $RUN is not ours" >&2; exit 1; }
+# A disposable VM (one with a base.qcow2) starts every session on a new, empty overlay, and the
+# overlay is replaced again when it stops, so nothing from a session is kept.
+# While $DIR/committing exists, the base is incomplete without this overlay (an interrupted
+# vm-browser.sh run): nothing starts until a run has finished writing it.
+fresh() {
+  [ -f "$DIR/base.qcow2" ] || return 0
+  [ ! -e "$DIR/committing" ] || { echo "vm-browser: VM $VM's installed system was not saved completely; run vm-browser.sh --name $VM --update" >&2; return 1; }
+  virsh managedsave-remove "$VM" >/dev/null 2>&1   # a saved memory state belongs to the old overlay
+  qemu-img create -q -f qcow2 -F qcow2 -b "$DIR/base.qcow2" "$DIR/disk.qcow2.new.$$" && mv -f "$DIR/disk.qcow2.new.$$" "$DIR/disk.qcow2"
+}
+start_vm() {   # with the lock held
+  case "$(virsh domstate "$VM" 2>/dev/null)" in
+    running) ;;
+    "shut off") fresh || { rm -f "$RUN/session.$$"; echo "vm-browser: could not make a new overlay for $VM" >&2; exit 1; }
+                virsh start "$VM" >/dev/null;;
+    # Any other state: a disposable VM is started only from "shut off", on a new overlay (the
+    # wait below tries again).
+    *) [ -f "$DIR/base.qcow2" ] || virsh start "$VM" >/dev/null 2>&1;;
+  esac
+}
+maintaining() { [ -f "$RUN/maintenance" ] && kill -0 "$(cat "$RUN/maintenance")" 2>/dev/null; }
 exec 9>"$RUN/lock"
-flock -w 120 9; touch "$RUN/session.$$"
-[ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
+flock -w 120 9
+# vm-browser.sh is updating this VM: a browser started now would run in, and be saved into, the
+# installed system.
+if maintaining; then
+  echo "vm-browser: VM $VM is being updated by vm-browser.sh; try again when it has finished" >&2
+  command -v notify-send >/dev/null && notify-send -a vm-browser "VM $VM is being updated" "Try again when vm-browser.sh has finished." 2>/dev/null
+  exit 1
+fi
+touch "$RUN/session.$$"
+start_vm
 flock -u 9
+# A disposable VM's installed system gets updates only from vm-browser.sh --update: remind after a week.
+if [ -f "$DIR/base.qcow2" ] && [ -n "$(find "$DIR/base.qcow2" -mtime +7 2>/dev/null)" ] && command -v notify-send >/dev/null; then
+  notify-send -a vm-browser "VM $VM: installed system is over a week old" "Each session downloads the updates again. Update it with: vm-browser.sh --name $VM --update" 2>/dev/null || true
+fi
 # Wait for the VM, and for its network guard to be active: no browser starts without it.
 up=""
 for _ in $(seq 1 60); do
   "${SSH[@]}" systemctl is-active --quiet vm-browser-netguard.service 2>/dev/null && { up=1; break; }
   # A VM that was still shutting down when this launcher started: start it again.
-  [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || virsh start "$VM" >/dev/null 2>&1
+  if [ "$(virsh domstate "$VM" 2>/dev/null)" = "shut off" ]; then flock -w 120 9; start_vm; flock -u 9; fi
   sleep 2
 done
 [ -n "$up" ] || { rm -f "$RUN/session.$$"; echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
@@ -607,7 +766,8 @@ done
 kill "$pp" 2>/dev/null; wait "$pp" 2>/dev/null
 waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD" 9>&-; rc=$?
 # The last window closed: stop the VM, so it isn't running, online, while nothing uses it.
-# An automatic update that is running in the VM finishes first. VMB_KEEP_RUNNING=1 skips this.
+# An automatic update that is running in a persistent VM finishes first (a disposable VM loses
+# it anyway). VMB_KEEP_RUNNING=1 skips this.
 others() {   # true if another launcher of this VM is still open (session files of dead ones are removed)
   local f; for f in "$RUN"/session.*; do [ -e "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f"; done
   compgen -G "$RUN/session.*" >/dev/null
@@ -615,11 +775,12 @@ others() {   # true if another launcher of this VM is still open (session files 
 flock -w 120 9; rm -f "$RUN/session.$$"; others; last=$?; flock -u 9
 if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
   for _ in $(seq 1 120); do   # up to an hour
+    [ ! -f "$DIR/base.qcow2" ] || break
     # The update services are oneshot: "activating" while they run, "inactive" after.
     "${SSH[@]}" 'systemctl is-active dnf5-automatic.service dnf-automatic.service | grep -qxE "activating|active|deactivating|reloading"' 2>/dev/null || break
     sleep 30
   done
-  flock -w 120 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
+  flock -w 120 9; others || maintaining || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
   # A shutdown is a request the guest carries out; a compromised guest could ignore it. If it is
   # still running after the wait (2 minutes) and no launcher has opened since, switch it off.
   for _ in $(seq 1 "${VMB_SHUTDOWN_WAIT:-120}"); do
@@ -627,8 +788,13 @@ if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
     sleep 1
   done
   flock -w 120 9
-  if ! others && [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ]; then
-    echo "vm-browser: VM $VM did not shut down; switching it off" >&2; virsh destroy "$VM" >/dev/null 2>&1
+  # A vm-browser.sh run that started after the VM stopped owns it now: leave it alone.
+  if ! others && ! maintaining; then
+    if [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ]; then
+      echo "vm-browser: VM $VM did not shut down; switching it off" >&2; virsh destroy "$VM" >/dev/null 2>&1
+    fi
+    # A disposable VM: this session's changes are discarded now, not only at the next start.
+    [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || fresh
   fi
   flock -u 9
 fi
@@ -696,18 +862,40 @@ main() {
   parse_args "$@"
   setup
   if ! virsh dominfo "$NAME" >/dev/null 2>&1; then
-    [ ! -f "$DIR/disk.qcow2" ] || die "$DIR has a disk but no VM; remove that folder first"
+    [ ${#BROWSERS[@]} -gt 0 ] || [ ${#RPMS[@]} -gt 0 ] || die "VM $NAME doesn't exist yet; name a browser or --rpm to create it"
+    [ ! -f "$DIR/disk.qcow2" ] && [ ! -f "$DIR/base.qcow2" ] || die "$DIR has a disk but no VM; remove that folder first"
+    WANT_DISPOSABLE=${DISPOSABLE:-0}
     create_vm
+    if [ "$WANT_DISPOSABLE" = 1 ]; then run_dir; echo $$ > "$RUN/maintenance"; trap abort_maintenance EXIT; MAINT=1; fi
+  else
+    if [ -n "$DISPOSABLE" ]; then WANT_DISPOSABLE=$DISPOSABLE; elif is_disposable; then WANT_DISPOSABLE=1; else WANT_DISPOSABLE=0; fi
+    begin_maintenance
   fi
   [ "$(virsh domstate "$NAME")" = running ] || virsh start "$NAME" >/dev/null
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
   setup_netguard
+  setup_updates
   warn_mixing
-  for b in "${BROWSERS[@]}"; do install_browser "$b"; done
-  for r in "${RPMS[@]}"; do install_rpm "$r"; done
-  log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
+  local made=() have=() p
+  for b in "${BROWSERS[@]}"; do install_browser "$b"; made+=("$PKG"); done
+  for r in "${RPMS[@]}"; do install_rpm "$r"; made+=("$PKG"); done
+  # The other browsers' launchers are written again too, so they match this version and mode.
+  [ ! -f "$DIR/browsers" ] || mapfile -t have < "$DIR/browsers"
+  for p in "${have[@]}"; do
+    [[ " ${made[*]} " == *" $p "* ]] || [ ! -e "$HOME/.local/bin/vmb-$NAME-$p" ] || ( make_launcher "$p" ) && continue
+    # An old launcher of a disposable VM would never replace its overlay.
+    [ "$WANT_DISPOSABLE" = 1 ] && die "could not rewrite the launcher for $p; remove $HOME/.local/bin/vmb-$NAME-$p or the package from $DIR/browsers"
+    echo "WARNING: could not rewrite the launcher for $p" >&2
+  done
+  local used; used=$(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text)
+  end_maintenance
+  if is_disposable; then
+    log "Done. VM $NAME is disposable and shut off: each session starts from its installed system ($used; file $(du -h "$DIR/base.qcow2" | cut -f1))"
+  else
+    log "Done. VM $NAME: $used; disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
+  fi
 }
 
 # Run only when executed, not when sourced (tests/run.sh sources it to test single functions).
