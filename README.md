@@ -13,12 +13,12 @@ The browser and anything it installs stay inside the VM: root services, kernel h
 ## How it works
 
 ```
-your desktop (Wayland)                         VM (libvirt user session)
-┌──────────────────────┐   waypipe over SSH    ┌──────────────────────────────┐
+your desktop (Wayland)                             VM (libvirt user session)
+┌──────────────────────┐   waypipe over SSH     ┌──────────────────────────────┐
 │ app menu → launcher  │ ───────────────────▶  │ user "browser" (no sudo)     │
 │ browser window       │ ◀───────────────────  │   └─ chrome / firefox / …    │
-└──────────────────────┘   127.0.0.1:<port>    │ user "admin" (sudo, key only)│
-                                               └──────────────────────────────┘
+└──────────────────────┘   127.0.0.1:<port>     │ user "admin" (sudo, key only)│
+                                                └──────────────────────────────┘
 ```
 
 - **Networking:** the VM uses `passt`. Its SSH is forwarded to `127.0.0.1` only, so it isn't reachable from your network.
