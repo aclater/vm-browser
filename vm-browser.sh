@@ -428,7 +428,8 @@ SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostK
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-exec waypipe --no-gpu "${SSH[@]}" "$EXE$(printf ' %q' "$@")"
+CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
+exec waypipe --no-gpu "${SSH[@]}" "$CMD"
 LAUNCHER
   } > "$bin"
   chmod 755 "$bin"
