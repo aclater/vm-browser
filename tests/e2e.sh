@@ -191,5 +191,6 @@ for _ in $(seq 1 60); do [ "$(virsh domstate "$NAME")" = "shut off" ] && break; 
 pass "the VM shut down after its last launcher closed"
 launch --version | grep -q 'Mozilla Firefox' || fail "the launcher did not start the VM again"
 VMB_KEEP_RUNNING=1 launch --version >/dev/null || true
-"${ASSH[@]}" 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
+ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" \
+  -p "$(cat "$D/port")" admin@127.0.0.1 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
 pass "the launcher starts the VM again; the network guard is loaded at boot"

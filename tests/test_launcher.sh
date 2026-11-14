@@ -10,6 +10,7 @@ for c in virsh ssh waypipe scp gtk-update-icon-cache; do
   chmod +x "$T/stubs/$c"
 done
 export PATH="$T/stubs:$PATH"
+export VMB_SHUTDOWN_WAIT=1   # the stub VM never stops by itself: keep the wait before a forced stop short
 # ssh answers "no update running" to the launcher's check before it stops the VM (#9).
 cat > "$T/stubs/ssh" <<'STUB'
 #!/bin/bash
@@ -113,3 +114,11 @@ check "VMB_KEEP_RUNNING=1 leaves the VM running" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run4 VMB_KEEP_RUNNING=1 $L && ! grep -qx shutdown \$T/calls"
 check "a running update (oneshot: activating) keeps the VM up until it finishes" \
   bash -c "launcher_for /usr/bin/firefox && grep -q 'activating|active' \$T/home/.local/bin/vmb-testvm-testpkg"
+
+# A guest that ignores the shutdown request is switched off (#9). The stub virsh always says
+# "running", so after the (shortened) wait the launcher must call destroy; with another
+# launcher open it must not.
+check "a VM that ignores the shutdown is switched off after the wait" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run5 $L 2>/dev/null && grep -A1 -x virsh \$T/calls | grep -qx destroy"
+check "...but not while another launcher of the VM is open" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && export XDG_RUNTIME_DIR=\$T/run6 && (BROWSER_SECONDS=4 $L 2>/dev/null &) && sleep 1 && $L 2>/dev/null && ! grep -qx destroy \$T/calls && ! grep -qx shutdown \$T/calls"

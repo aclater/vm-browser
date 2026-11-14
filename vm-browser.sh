@@ -620,6 +620,17 @@ if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
     sleep 30
   done
   flock -w 120 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
+  # A shutdown is a request the guest carries out; a compromised guest could ignore it. If it is
+  # still running after the wait (2 minutes) and no launcher has opened since, switch it off.
+  for _ in $(seq 1 "${VMB_SHUTDOWN_WAIT:-120}"); do
+    [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || break
+    sleep 1
+  done
+  flock -w 120 9
+  if ! others && [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ]; then
+    echo "vm-browser: VM $VM did not shut down; switching it off" >&2; virsh destroy "$VM" >/dev/null 2>&1
+  fi
+  flock -u 9
 fi
 exit $rc
 LAUNCHER
