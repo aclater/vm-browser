@@ -84,19 +84,39 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 | `--port N` | first free from 2230 | Local SSH port |
 | `--memory GiB` / `--cpus N` / `--disk SIZE` | 4 / 4 / 12G | VM size (the disk is thin-provisioned) |
 | `--lan` | off | Let the VM reach your local network. Your desktop's loopback and its own addresses stay blocked. Applies to this run: a later run without it blocks the LAN again |
+| `--disposable` | off | Start every session from the installed system and discard the session's changes when the VM stops (see "Disposable VMs"). Stays on for later runs |
+| `--persistent` | on | Keep the VM's disk between sessions again |
+| `--update` | — | Install the guest's updates now. Needs no browser |
 
 Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"**, with a script in `~/.local/bin/vmb-<vm>-<package>`.
 
 ### Daily use
 
 - **Open a browser:** use its menu entry. The VM starts automatically.
-- **Close it:** when the last browser window of a VM closes, the VM shuts down, after any update that is running in it has finished. A VM that hasn't shut down two minutes after being asked is switched off (a compromised VM could ignore the request). To keep it running, start the launcher with `VMB_KEEP_RUNNING=1`, or stop it by hand: `virsh -c qemu:///session shutdown <vm>`.
+- **Close it:** when the last browser window of a VM closes, the VM shuts down, after any update that is running in it has finished (a disposable VM doesn't wait: it loses the update anyway). A VM that hasn't shut down two minutes after being asked is switched off (a compromised VM could ignore the request). To keep it running, start the launcher with `VMB_KEEP_RUNNING=1`, or stop it by hand: `virsh -c qemu:///session shutdown <vm>`.
+- **Update a VM by hand:** `./vm-browser.sh --name <vm> --update`.
 - **Admin shell:** `ssh -F none -i ~/.local/share/vm-browser/<vm>/id_ed25519 -o UserKnownHostsFile=~/.local/share/vm-browser/<vm>/known_hosts -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
 - **Remove a VM:**
   ```bash
   virsh -c qemu:///session destroy <vm>; virsh -c qemu:///session undefine <vm> --remove-all-storage
   rm -rf ~/.local/share/vm-browser/<vm> ~/.local/bin/vmb-<vm>-* ~/.local/share/applications/vmb-<vm>-*.desktop
   ```
+
+### Disposable VMs
+
+By default a VM keeps its disk, so anything that compromises it stays until you remove the VM and create it again. With `--disposable`, nothing a session changes is kept:
+
+```bash
+./vm-browser.sh --name personal --disposable firefox   # a new VM, or an existing one that is shut off
+./vm-browser.sh --name personal --update               # now and then: updates into the installed system
+```
+
+- **How it works:** the installed system is kept read-only in `~/.local/share/vm-browser/<vm>/base.qcow2`. Each session runs on an empty overlay, `disk.qcow2`. The launcher makes a new overlay before it starts the VM, and again after the VM stops, so a session's changes are discarded, even changes made as root.
+- **What you lose:** downloads, browser profiles, bookmarks, saved passwords and sign-ins. Every session starts like a fresh install. This suits personal or one-off browsing. It suits a work browser that you sign into every day less well, and Prisma Access Browser needs you to sign in again in each session.
+- **Updates:** a session installs the day's updates as usual but loses them at shutdown, and never reboots for them. Run `--update` to install them into the installed system. The launcher shows a desktop notification when that is more than a week old.
+- **Script runs** (adding a browser, `--update`, `--lan`) change the installed system. They need the VM shut off with no browser open, and launchers refuse to start until the run has finished. If a run fails, its changes are discarded.
+- **An existing VM** made disposable keeps its current disk as the installed system, including anything a past session left there. To start clean, remove the VM and create it again with `--disposable`.
+- `--persistent` makes the VM keep its disk again.
 
 ## Notes
 
@@ -105,8 +125,8 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 - **Fedora image downloads** are used only if the release's `CHECKSUM` file is signed by that release's key, and only the signed part of the file is read. The key fingerprints for Fedora 42–47 are pinned in the script (`FEDORA_KEYS`). For any other release, the script stops: pass `--image` with an image you've verified, or add the release's key.
 - **Chromium on RHEL** comes from EPEL, so the script enables CodeReady Builder and EPEL.
 - **ISO installs** boot the installer kernel straight from the ISO and supply a kickstart on a second virtual disc labelled `OEMDRV`, so `virt-install` isn't needed. DVD ISOs install from the disc. Fedora netinstall ISOs use Fedora's mirrors through a metalink, which pins the hash of the repository metadata (and so of every package), and RHEL boot ISOs register with the activation key during installation. The install files that hold the key are deleted however the install ends, and the copies Anaconda leaves in the VM are removed during setup.
-- **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Because the VM is off while no browser is open, a daily run it missed happens within an hour of its next start, and a reboot it needs closes any open browser window.
-- **The VM is kept between sessions:** its disk persists, so anything that compromises it stays until you remove the VM and create it again (see "Remove a VM"). Stopping it when you're done means it isn't online in between. A disposable mode that discards changes at shutdown is tracked in [#9](https://github.com/aclater/vm-browser/issues/9).
+- **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Because the VM is off while no browser is open, a daily run it missed happens within an hour of its next start, and a reboot it needs closes any open browser window. Disposable VMs never reboot for updates.
+- **By default the VM is kept between sessions:** its disk persists, so anything that compromises it stays until you remove the VM and create it again (see "Remove a VM"). Stopping it when you're done means it isn't online in between. `--disposable` discards each session's changes instead (see "Disposable VMs").
 - **Display:** the browser renders on the VM's CPU, since there's no GPU passthrough. That's fine for documents and web apps, but not for games or heavy video.
 - **Windows and the clipboard:** the browser's windows reach your desktop through waypipe, as an ordinary Wayland client. While one of them has focus it can read your clipboard, including a password you've just copied, and it can draw any window, so a compromised browser could imitate a login or system dialog. Launchers ask for a security context (`waypipe --secctx vm-browser.<vm>`), so compositors that support it, such as Sway and Hyprland, can identify these windows and withhold privileged protocols: screen capture, virtual keyboards and clipboard managers. Each launch first checks, on your desktop and without asking the VM, whether the compositor offers the protocol. GNOME (checked on GNOME 51) doesn't, so launchers there run without it. GNOME doesn't give those privileged protocols to ordinary windows either, which leaves the clipboard and look-alike windows.
 
@@ -122,7 +142,7 @@ Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.
 - that a hostile RPM gets no launcher;
 - the shutdown after the last window closes, and the restart.
 
-`tests/run.sh` runs 122 unit checks that need no VM.
+`tests/run.sh` runs 141 unit checks that need no VM.
 
 | Scenario | Where | Result |
 |---|---|---|
