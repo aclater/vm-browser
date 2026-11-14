@@ -107,7 +107,22 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 
 ## Status
 
-Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0.11). Every scenario completed unattended. Each launcher's command was then run as the `browser` user over its own SSH settings.
+### Security changes, tested 2026-11-14
+
+Tested on a Fedora 45 desktop (GNOME 51, libvirt user session, passt, waypipe 0.11.2), and on GitHub's runner (Fedora 44 container with KVM). `tests/e2e.sh` builds a VM, then checks the launcher, the network guard, the keys, a hostile RPM and the shutdown after the last window closes. `tests/run.sh` runs 92 unit checks that need no VM.
+
+| Scenario | Where | Result |
+|---|---|---|
+| Fedora 44 cloud image, downloaded and verified against the pinned key: Firefox, all e2e checks, LAN check against a NAS | desktop | pass |
+| The same, plus a hostile `~/.ssh/config` and Firefox opened through the launcher on a headless Sway (window seen with security context `vm-browser.<vm>`) | GitHub runner | pass |
+| RHEL 10.2 boot ISO with activation key (kickstart): Firefox 153 ESR, all e2e checks, and the activation key found nowhere in the VM | desktop | pass |
+| Fedora 45 netinstall ISO (metalink): Firefox. 447 of 448 installed packages are signed by the Fedora 45 key; the other is the key itself | desktop | pass |
+| GNOME 51: `waypipe --secctx` refused (no `wp_security_context_v1`), launcher falls back to plain waypipe | desktop | pass |
+| Fedora 44: Chrome 157, Chromium 156 and Brave 1.99 in one VM, Prisma Access Browser 157.19 in its own. Launchers built from each package (name, icon, window class), each browser started through its launcher | desktop | pass |
+
+### Browsers, tested 2026-11-13
+
+Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0.11). Every scenario completed unattended. Each launcher's command was then run as the `browser` user over its own SSH settings. These runs predate the security changes above.
 
 | Scenario | Result | Disk file | Browser versions |
 |---|---|---|---|
