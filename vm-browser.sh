@@ -489,7 +489,7 @@ SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostK
 # One session file per open launcher, so the VM can be stopped when the last one closes.
 RUN="${XDG_RUNTIME_DIR:-/tmp/vm-browser-$(id -u)}/vm-browser-$VM"; mkdir -p -m 700 "$RUN"
 exec 9>"$RUN/lock"
-flock 9; touch "$RUN/session.$$"
+flock -w 120 9; touch "$RUN/session.$$"
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
 flock -u 9
 for _ in $(seq 1 60); do
@@ -514,13 +514,14 @@ others() {   # true if another launcher of this VM is still open (session files 
   local f; for f in "$RUN"/session.*; do [ -e "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f"; done
   compgen -G "$RUN/session.*" >/dev/null
 }
-flock 9; rm -f "$RUN/session.$$"; others; last=$?; flock -u 9
+flock -w 120 9; rm -f "$RUN/session.$$"; others; last=$?; flock -u 9
 if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
   for _ in $(seq 1 120); do   # up to an hour
-    "${SSH[@]}" 'systemctl is-active --quiet dnf5-automatic.service dnf-automatic.service' 2>/dev/null || break
+    # The update services are oneshot: "activating" while they run, "inactive" after.
+    "${SSH[@]}" 'systemctl is-active dnf5-automatic.service dnf-automatic.service | grep -qxE "activating|active|deactivating|reloading"' 2>/dev/null || break
     sleep 30
   done
-  flock 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
+  flock -w 120 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
 fi
 exit $rc
 LAUNCHER
