@@ -61,4 +61,4 @@ jobs:
               # /run/user/<uid>, as on a desktop (the runner'"'"'s AppArmor profile for passt expects it).
               run=/run/user/$(id -u ci); install -d -o ci -m 700 "$run"
               cp -r /src /home/ci/vm-browser && chown -R ci: /home/ci/vm-browser
-              runuser -u ci -- env XDG_RUNTIME_DIR="$run" HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'
+              runuser -u ci -- env E2E_HOSTILE_SSH_CONFIG=1 XDG_RUNTIME_DIR="$run" HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'

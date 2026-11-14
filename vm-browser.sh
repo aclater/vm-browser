@@ -233,7 +233,9 @@ EOF
 }
 
 # ---------- helpers for talking to the VM ----------
-load_port() { PORT=$(cat "$DIR/port"); SSH=(ssh -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KH" -p "$PORT"); }
+# Every ssh and scp to the VM uses -F none: the desktop's ~/.ssh/config and ssh_config.d are not
+# read, so a "Host *" block there can't forward the SSH agent or X11, or add a ProxyCommand.
+load_port() { PORT=$(cat "$DIR/port"); SSH=(ssh -F none -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$KH" -p "$PORT"); }
 vm()   { "${SSH[@]}" admin@127.0.0.1 "$@"; }
 vmsh() { "${SSH[@]}" admin@127.0.0.1 "sudo bash -s $(printf '%q ' "$@")"; }   # run a root script from stdin, args quoted
 wait_vm() {
@@ -320,7 +322,7 @@ install_rpm() {
   pkg=$(rpm -qp --qf '%{NAME}' "$f" 2>/dev/null) || die "not an RPM: $f"
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
-  scp -q -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
+  scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
   vmsh <<'EOF'
 set -e
 dnf -y -q install /var/tmp/vm-browser.rpm; rm -f /var/tmp/vm-browser.rpm
@@ -351,14 +353,14 @@ EOF
   id="vmb-$NAME-$pkg"
   if [ -n "$icon" ]; then
     local dest; ext=${icon##*.}; dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
-    mkdir -p "$dest"; scp -q -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext"
+    mkdir -p "$dest"; scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext"
   fi
   mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
   cat > "$HOME/.local/bin/$id" <<EOF
 #!/bin/bash
 # vm-browser launcher: $name in VM $NAME
 export LIBVIRT_DEFAULT_URI=qemu:///session
-SSH=(ssh -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p $PORT browser@127.0.0.1)
+SSH=(ssh -F none -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p $PORT browser@127.0.0.1)
 [ "\$(virsh domstate $NAME 2>/dev/null)" = running ] || virsh start $NAME >/dev/null
 for _ in \$(seq 1 60); do "\${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 exec waypipe --no-gpu "\${SSH[@]}" $exe "\$@"

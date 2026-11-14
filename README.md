@@ -27,6 +27,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 
 - **Networking:** the VM uses `passt`. Its SSH is forwarded to `127.0.0.1` only, so it isn't reachable from your network.
 - **Users:** the browser runs as an unprivileged `browser` user. Admin work uses a separate `admin` account with an SSH key and no password.
+- **SSH:** every connection to the VM, including the launchers', uses `ssh -F none`, so your `~/.ssh/config` and `/etc/ssh/ssh_config.d` don't apply. A `Host *` block there can't forward your SSH agent or X11 display into the VM.
 - **Repositories:** each browser comes from its vendor's signed repository (Google, Brave, Palo Alto Networks), or from Fedora/EPEL for Chromium and Firefox.
 - **Launchers:** each is built from the package's own `.desktop` file (name, command, icon and window class), so it appears in your app menu with the browser's real icon.
 
