@@ -55,10 +55,12 @@ jobs:
           # container is a throwaway on a throwaway runner; the script still runs as a normal user.
           docker run --rm --privileged \
             -v "$GITHUB_WORKSPACE:/src:ro" "$IMAGE" bash -euo pipefail -c '
-              dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img rpm-build sway \
+              dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img rpm-build sway python3 \
                 passt waypipe genisoimage openssh-clients curl gnupg2 iproute procps-ng util-linux shadow-utils rpm >/dev/null
               useradd -m ci
+              # A second address on the "desktop", like a libvirt bridge, for the --lan check (#2).
+              ip link add vmbtest0 type dummy && ip addr add 10.99.0.1/24 dev vmbtest0 && ip link set vmbtest0 up
               # /run/user/<uid>, as on a desktop (the runner'"'"'s AppArmor profile for passt expects it).
               run=/run/user/$(id -u ci); install -d -o ci -m 700 "$run"
               cp -r /src /home/ci/vm-browser && chown -R ci: /home/ci/vm-browser
-              runuser -u ci -- env E2E_HOSTILE_SSH_CONFIG=1 E2E_SWAY=1 XDG_RUNTIME_DIR="$run" HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'
+              runuser -u ci -- env E2E_HOSTILE_SSH_CONFIG=1 E2E_SWAY=1 E2E_HOST_ADDR=10.99.0.1 XDG_RUNTIME_DIR="$run" HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'

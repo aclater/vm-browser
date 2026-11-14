@@ -26,6 +26,11 @@ your desktop (Wayland)                             VM (libvirt user session)
 ```
 
 - **Networking:** the VM uses `passt`. Its SSH is forwarded to `127.0.0.1` only, so it isn't reachable from your network.
+- **What the VM can reach:** passt hands the VM's traffic for its gateway address to your desktop's `127.0.0.1`, and its traffic for any of your desktop's other addresses (libvirt and container bridges, VPNs, other interfaces) to the desktop itself, past its firewall. Without a guard that would expose every service listening there: printing (CUPS), keyboard and mouse sharing, other VMs' SSH ports, development servers. A firewall inside the VM (an nftables table) rejects:
+  - **always:** the gateway, your desktop's own addresses, multicast and broadcast;
+  - **unless you pass `--lan`:** private, shared and link-local ranges (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `169.254/16`, `fc00::/7`, `fe80::/10`) and the VM's on-link networks, including the LAN's global IPv6 prefix, so your LAN, router and NAS are out of reach.
+
+  DNS, DHCP, IPv6 neighbour discovery and the internet work. The table is loaded at every boot before the VM's SSH server starts, and again when the VM's network changes, and launchers start a browser only once it is active. Until the VM has a gateway, it rejects all IPv4 but DHCP. Your desktop's addresses are taken when you run `vm-browser.sh` and can change later (a new VPN, a new IPv6 temporary address): run the script again for the VM to refresh them. Each run sets the LAN rule too, so a later run without `--lan` blocks the LAN again. The rules are enforced inside the VM: they stop the browser, which has no root rights, but a root compromise of the VM could remove them.
 - **Users:** the browser runs as an unprivileged `browser` user, which the launchers reach with their own SSH key. Admin work uses a separate `admin` account with a different key and no password.
 - **Host key:** the script makes the VM's SSH host key itself and pins it in `known_hosts` before the VM first boots. Nothing else that might be listening on the local port is trusted with commands or credentials.
 - **SSH:** every connection to the VM, including the launchers', uses `ssh -F none`, so your `~/.ssh/config` and `/etc/ssh/ssh_config.d` don't apply. A `Host *` block there can't forward your SSH agent or X11 display into the VM.
@@ -37,7 +42,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 - **Desktop:** Fedora (or similar) running Wayland, with KVM.
 - **Host packages:**
   ```bash
-  sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2
+  sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute
   ```
 - **RHEL guests** also need a Red Hat account: an [activation key and org ID](https://console.redhat.com/insights/connector/activation-keys), plus the RHEL KVM guest image or DVD ISO from [access.redhat.com](https://access.redhat.com/downloads). 
 
@@ -74,6 +79,7 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 | `--name NAME` | `<os><version>-browsers` | VM name (letters, digits and hyphens); use different names for separate VMs |
 | `--port N` | first free from 2230 | Local SSH port |
 | `--memory GiB` / `--cpus N` / `--disk SIZE` | 4 / 4 / 12G | VM size (the disk is thin-provisioned) |
+| `--lan` | off | Let the VM reach your local network. Your desktop's loopback and its own addresses stay blocked. Applies to this run: a later run without it blocks the LAN again |
 
 Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"**, with a script in `~/.local/bin/vmb-<vm>-<package>`.
 
