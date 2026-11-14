@@ -1,0 +1,55 @@
+# End-to-end: build a real Fedora VM with vm-browser.sh (tests/e2e.sh) on GitHub's runner,
+# which has KVM. The script runs in a Fedora container as a normal user, like on a desktop.
+# Slow (about 15 minutes) and dependent on Fedora's mirrors, so it runs on pull requests that
+# change the script, weekly, and on demand, and is not a required check.
+name: e2e
+
+on:
+  pull_request:
+    paths: ["vm-browser.sh", "tests/**", ".github/workflows/e2e.yml"]
+  push:
+    branches: [main]
+    paths: ["vm-browser.sh", "tests/**", ".github/workflows/e2e.yml"]
+  schedule:
+    - cron: "41 5 * * 2"  # weekly
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # a new push supersedes the old PR run; main runs finish
+
+permissions:
+  contents: read
+
+env:
+  # Fedora 44, pinned by digest.
+  IMAGE: registry.fedoraproject.org/fedora@sha256:b414c09be79dd1f32529b55b096b6bb30435d82ee16fbdbbabf8985eb5f86db0
+
+jobs:
+  fedora:
+    name: e2e (Fedora cloud image)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # KVM for the container's user, and user namespaces for passt's sandbox (Ubuntu
+      # restricts unprivileged ones through AppArmor).
+      - name: KVM and user namespaces on the runner
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          ls -l /dev/kvm
+      - name: End-to-end test in a Fedora container
+        run: |
+          docker run --rm --device /dev/kvm --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            -v "$GITHUB_WORKSPACE:/src:ro" "$IMAGE" bash -euo pipefail -c '
+              dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img \
+                passt waypipe genisoimage openssh-clients curl gnupg2 iproute procps-ng util-linux shadow-utils rpm >/dev/null
+              useradd -m ci
+              install -d -o ci -m 700 /run/user/ci
+              cp -r /src /home/ci/vm-browser && chown -R ci: /home/ci/vm-browser
+              runuser -u ci -- env XDG_RUNTIME_DIR=/run/user/ci HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'

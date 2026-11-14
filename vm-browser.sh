@@ -25,6 +25,7 @@ EOF
 
 OS=fedora VER="" IMAGE="" RHSM="" NAME="" PORT="" MEM=4 CPUS=4 DISK=12G
 BROWSERS=() RPMS=()
+parse_args() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --os) OS=$2; shift 2;; --version) VER=$2; shift 2;; --image) IMAGE=$(realpath "$2"); shift 2;;
@@ -38,17 +39,21 @@ done
 case "$OS" in fedora) VER=${VER:-44};; rhel) VER=${VER:-10};; *) echo "--os must be fedora or rhel"; exit 1;; esac
 NAME=${NAME:-$OS$VER-browsers}
 [ ${#BROWSERS[@]} -gt 0 ] || [ ${#RPMS[@]} -gt 0 ] || { echo "Choose at least one browser or --rpm."; usage; exit 1; }
+}
 
-export LIBVIRT_DEFAULT_URI=qemu:///session
-DIR="$HOME/.local/share/vm-browser/$NAME"
-mkdir -p "$DIR"; chmod 700 "$DIR"
-KEYF="$DIR/id_ed25519"; KH="$DIR/known_hosts"
 log() { printf '\n== %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg; do
-  command -v $c >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2"
-done
+# State folder, keys and host tools. Separate from parse_args so the tests can source this file.
+setup() {
+  export LIBVIRT_DEFAULT_URI=qemu:///session
+  DIR="$HOME/.local/share/vm-browser/$NAME"
+  mkdir -p "$DIR"; chmod 700 "$DIR"
+  KEYF="$DIR/id_ed25519"; KH="$DIR/known_hosts"
+  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg; do
+    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2"
+  done
+}
 
 # ---------- VM creation (skipped if the VM already exists) ----------
 create_vm() {
@@ -199,6 +204,7 @@ base_setup() {
   if [ "$OS" = rhel ]; then
     [ -n "$RHSM" ] || die "RHEL needs --rhsm FILE for registration and updates"
     { printf 'o=%q\nk=%q\n' "$(sed -n 's/^org=//p' "$RHSM")" "$(sed -n 's/^key=//p' "$RHSM")"
+      # shellcheck disable=SC2016  # expanded by the guest's shell, from the o= and k= lines above
       echo 'subscription-manager status >/dev/null 2>&1 || subscription-manager register --org "$o" --activationkey "$k" >/dev/null'; } | vmsh
   fi
   local auto_pkg=dnf5-plugin-automatic auto_timer=dnf5-automatic.timer
@@ -301,7 +307,7 @@ EOF
   [ -n "$exe" ] || die "could not find how to start $pkg"
   id="vmb-$NAME-$pkg"
   if [ -n "$icon" ]; then
-    ext=${icon##*.}; local dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
+    local dest; ext=${icon##*.}; dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
     mkdir -p "$dest"; scp -q -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext"
   fi
   mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
@@ -331,13 +337,20 @@ EOF
 }
 
 # ---------- main ----------
-if ! virsh dominfo "$NAME" >/dev/null 2>&1; then
-  [ ! -f "$DIR/disk.qcow2" ] || die "$DIR has a disk but no VM; remove that folder first"
-  create_vm
-fi
-[ "$(virsh domstate "$NAME")" = running ] || virsh start "$NAME" >/dev/null
-load_port; wait_vm
-vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
-for b in "${BROWSERS[@]}"; do install_browser "$b"; done
-for r in "${RPMS[@]}"; do install_rpm "$r"; done
-log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}'); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
+main() {
+  parse_args "$@"
+  setup
+  if ! virsh dominfo "$NAME" >/dev/null 2>&1; then
+    [ ! -f "$DIR/disk.qcow2" ] || die "$DIR has a disk but no VM; remove that folder first"
+    create_vm
+  fi
+  [ "$(virsh domstate "$NAME")" = running ] || virsh start "$NAME" >/dev/null
+  load_port; wait_vm
+  vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
+  for b in "${BROWSERS[@]}"; do install_browser "$b"; done
+  for r in "${RPMS[@]}"; do install_rpm "$r"; done
+  log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}'); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
+}
+
+# Run only when executed, not when sourced (tests/run.sh sources it to test single functions).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

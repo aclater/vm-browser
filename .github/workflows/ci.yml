@@ -1,0 +1,50 @@
+# CI: ShellCheck on the script and the tests, then the unit tests (tests/run.sh), which check
+# everything that needs no VM. The VM itself is tested by e2e.yml.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # a new push supersedes the old PR run; main runs finish
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    container:
+      # Fedora 44, pinned by digest: UBI has no ShellCheck.
+      image: registry.fedoraproject.org/fedora@sha256:b414c09be79dd1f32529b55b096b6bb30435d82ee16fbdbbabf8985eb5f86db0
+    steps:
+      - name: Packages
+        run: dnf -y -q --setopt=install_weak_deps=False install git-core ShellCheck && dnf clean all
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck
+        run: shellcheck -x vm-browser.sh tests/*.sh
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    container:
+      # Fedora 44, pinned by digest (as above). The tests run as an unprivileged user, like the script.
+      image: registry.fedoraproject.org/fedora@sha256:b414c09be79dd1f32529b55b096b6bb30435d82ee16fbdbbabf8985eb5f86db0
+    steps:
+      - name: Packages
+        run: |
+          dnf -y -q --setopt=install_weak_deps=False install git-core gnupg2 openssh-clients genisoimage rpm-build file util-linux shadow-utils && dnf clean all
+          useradd -m ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests
+        run: |
+          chown -R ci "$GITHUB_WORKSPACE"
+          runuser -u ci -- tests/run.sh
