@@ -1,5 +1,9 @@
 # vm-browser
 
+[![CI](https://github.com/aclater/vm-browser/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aclater/vm-browser/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/aclater/vm-browser/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/aclater/vm-browser/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/aclater/vm-browser/badge)](https://scorecard.dev/viewer/?uri=github.com/aclater/vm-browser)
+
 Run a web browser inside a small, isolated Fedora or RHEL virtual machine, with its window on your normal Linux desktop.
 
 The browser and anything it installs stay inside the VM: root services, kernel hooks, repo jobs and system changes. That suits browsers whose installers change more than you'd like on your workstation, such as enterprise browsers with their own protection services, as well as everyday browsing you want kept apart.
@@ -103,3 +107,8 @@ Tested 2026-11-13 on a Fedora 45 desktop (libvirt user session, passt, waypipe 0
 | Fedora 43 downloaded and GPG-verified: Firefox | pass | 2.2 GB | Firefox 159 |
 
 Windows opened on the desktop for Prisma Access Browser (Fedora and RHEL guests) and Google Chrome (Fedora guest). Chrome felt somewhat slower than a native browser because it renders on the VM's CPU. Chromium, Brave and Firefox were checked with `--version`.
+
+## Security and contributing
+
+Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md). Changes and their
+tests are covered in [CONTRIBUTING.md](CONTRIBUTING.md).

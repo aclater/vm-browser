@@ -1,0 +1,42 @@
+# zizmor: security linter for GitHub Actions workflows (template injection, credential
+# persistence, excessive permissions, unpinned uses, ...). Offline audits only; findings
+# are printed as annotations and fail the check.
+# Locally: `pipx run zizmor==1.31.1 --offline .github`
+name: zizmor
+
+on:
+  pull_request:
+    paths: [".github/workflows/**", ".github/dependabot.yml", ".github/requirements/zizmor.txt"]
+  push:
+    branches: [main]
+    paths: [".github/workflows/**", ".github/dependabot.yml", ".github/requirements/zizmor.txt"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # a new push supersedes the old PR run; main runs finish
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    container:
+      # UBI 10 (ubi10/ubi 10.3), pinned by digest.
+      image: registry.access.redhat.com/ubi10/ubi@sha256:1e9193f051ac70582821c8a941325c5053488c54c75cd0c31b577d871ac29dba
+    steps:
+      - name: Packages
+        run: dnf -y -q --setopt=install_weak_deps=False install git-core python3-pip && dnf clean all
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # zizmor from PyPI, pinned by version and hash (.github/requirements/zizmor.txt), in
+      # place of the zizmor action, which runs zizmor's own container image.
+      - name: zizmor
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/bin/pip" install -q --require-hashes -r .github/requirements/zizmor.txt
+          "$RUNNER_TEMP/zizmor/bin/zizmor" --offline --format=github .github
