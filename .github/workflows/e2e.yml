@@ -50,6 +50,7 @@ jobs:
               dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img \
                 passt waypipe genisoimage openssh-clients curl gnupg2 iproute procps-ng util-linux shadow-utils rpm >/dev/null
               useradd -m ci
-              install -d -o ci -m 700 /run/user/ci
+              # /run/user/<uid>, as on a desktop (the runner'"'"'s AppArmor profile for passt expects it).
+              run=/run/user/$(id -u ci); install -d -o ci -m 700 "$run"
               cp -r /src /home/ci/vm-browser && chown -R ci: /home/ci/vm-browser
-              runuser -u ci -- env XDG_RUNTIME_DIR=/run/user/ci HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'
+              runuser -u ci -- env XDG_RUNTIME_DIR="$run" HOME=/home/ci /home/ci/vm-browser/tests/e2e.sh'
