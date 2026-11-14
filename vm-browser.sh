@@ -75,18 +75,58 @@ create_vm() {
   esac
 }
 
+# Fedora release keys: the primary key fingerprint per release. A Fedora image is used only if
+# its CHECKSUM file is signed by the key pinned here for that release. Taken from the
+# fedora-gpg-keys package (verified by rpm) and checked against https://fedoraproject.org/security/.
+# Add each new release here.
+declare -A FEDORA_KEYS=(
+  [42]=B0F4950458F69E1150C6C5EDC8AC4916105EF944
+  [43]=C6E7F081CF80E13146676E88829B606631645531
+  [44]=36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6
+  [45]=4F50A6114CD5C6976A7F1179655A4B02F577861E
+  [46]=D924B10D3E810DABDD8B56B596E7E91491211FCE
+  [47]=B2E766FA50CA6FA2D5ED06FC09D879E09488FB64
+)
+
+# verify_signed FILE KEYRING FINGERPRINT: prints only the signed text of the clearsigned FILE,
+# and only if it carries a good signature by the key with FINGERPRINT (primary key). gpgv
+# accepts unsigned text around the signed block, so nothing outside the block may be trusted.
+verify_signed() {
+  local f=$1 keyring fpr=$3 tmp status
+  keyring=$(realpath "$2")   # gpgv looks for a bare name in ~/.gnupg
+  tmp=$(mktemp -d)
+  if ! status=$(gpgv --status-fd 1 --keyring "$keyring" --output "$tmp/signed" "$f" 2>"$tmp/err"); then
+    cat "$tmp/err" >&2; rm -rf "$tmp"; return 1
+  fi
+  # VALIDSIG <signing key> ... <primary key>: the last field is the primary key's fingerprint.
+  if ! grep -Eq "^\[GNUPG:\] VALIDSIG [0-9A-F]+ .* $fpr\$" <<< "$status"; then
+    echo "signature is good but not by the expected key $fpr" >&2; rm -rf "$tmp"; return 1
+  fi
+  cat "$tmp/signed"; rm -rf "$tmp"
+}
+
+# fedora_cloud_entry VERSION < CHECKSUM text: prints "IMAGE SHA256" for the Cloud Base Generic image.
+fedora_cloud_entry() {
+  sed -nE "s/^SHA256 \((Fedora-Cloud-Base-Generic-$1-[0-9.]+\.x86_64\.qcow2)\) = ([0-9a-f]{64})\$/\1 \2/p" | head -1
+}
+
 fetch_fedora_cloud() {
   local base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$VER/Cloud/x86_64/images"
+  local fpr=${FEDORA_KEYS[$VER]:-}
+  [ -n "$fpr" ] || die "no pinned signing key for Fedora $VER in this script. Pass --image with an image you have verified, or add the release's key to FEDORA_KEYS."
   log "Finding the Fedora $VER Cloud image"
   local sumf; sumf=$(curl -fsSL "$base/" | grep -oE "Fedora-Cloud-$VER-[0-9.]+-x86_64-CHECKSUM" | sort -uV | tail -1)
   [ -n "$sumf" ] || die "no Fedora $VER Cloud image found at $base"
   curl -fsSL -o "$DIR/CHECKSUM" "$base/$sumf"
+  # Any keyring will do: only a signature by the pinned fingerprint is accepted.
   curl -fsSL https://fedoraproject.org/fedora.gpg | gpg --dearmor > "$DIR/fedora.gpg"
-  gpgv --keyring "$DIR/fedora.gpg" "$DIR/CHECKSUM" 2>/dev/null || die "CHECKSUM signature did not verify"
-  local img; img=$(grep -oE "Fedora-Cloud-Base-Generic-$VER-[0-9.]+\.x86_64\.qcow2" "$DIR/CHECKSUM" | head -1)
+  local entry img sum
+  entry=$(verify_signed "$DIR/CHECKSUM" "$DIR/fedora.gpg" "$fpr" | fedora_cloud_entry "$VER") || true
+  [ -n "$entry" ] || die "CHECKSUM ($sumf) is not signed by the Fedora $VER key $fpr, or lists no Cloud image"
+  read -r img sum <<< "$entry"
   log "Downloading $img"
   curl -fL -o "$DIR/$img" "https://download.fedoraproject.org/pub/fedora/linux/releases/$VER/Cloud/x86_64/images/$img"
-  (cd "$DIR" && grep -E "^SHA256 \($img\)" CHECKSUM | sha256sum -c -) || die "image checksum mismatch"
+  [ "$(sha256sum < "$DIR/$img" | cut -d' ' -f1)" = "$sum" ] || { rm -f "$DIR/$img"; die "image checksum mismatch: $img"; }
   IMAGE="$DIR/$img"; DOWNLOADED=1
 }
 
