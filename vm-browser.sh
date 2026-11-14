@@ -377,8 +377,8 @@ install_rpm() {
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
   # Copied into a new folder only admin can open, not a fixed name in a shared folder, where the
-  # browser user could plant a file of its own for root to install.
-  local tmpd; tmpd=$(vm 'mktemp -d') || tmpd=""
+  # browser user could plant a file of its own for root to install. (On disk: /tmp is in RAM.)
+  local tmpd; tmpd=$(vm 'mktemp -d -p /var/tmp vm-browser.XXXXXXXX') || tmpd=""
   safe_path "$tmpd" || die "could not make a folder for the RPM in the VM"
   scp -q "${SSHOPT[@]}" -i "$KEYF" -o UserKnownHostsFile="$KH" -P "$PORT" "$f" "admin@127.0.0.1:$tmpd/browser.rpm"
   vmsh "$tmpd" <<'EOF'
