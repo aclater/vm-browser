@@ -7,7 +7,8 @@ usage() { cat <<'EOF'
 Usage: vm-browser.sh [options] [BROWSER...]
 
 Browsers: chrome  chromium  brave  firefox  prisma
-  (run again with more browsers to add them to an existing VM)
+  (run again with more browsers to add them to an existing VM. Browsers in one VM share
+   one account and can read each other's data: use --name for one VM per trust level)
 
 Options:
   --os fedora|rhel     Distribution (default: fedora)
@@ -393,6 +394,25 @@ EOF
 }
 
 # ---------- browsers ----------
+# All browsers in a VM run as the same "browser" user, so one that is compromised can read the
+# others' profiles, cookies and sessions. Warn when a work browser (Prisma Access Browser) and
+# other browsers would end up in the same VM.
+warn_mixing() {
+  local have=() b
+  [ -f "$DIR/browsers" ] && mapfile -t have < "$DIR/browsers"
+  for b in "${BROWSERS[@]}"; do [ "$b" = prisma ] && have+=(prisma-access-browser-stable) || have+=("$b"); done
+  [ ${#RPMS[@]} -eq 0 ] || have+=(rpm)
+  local work=0 other=0
+  for b in "${have[@]}"; do [ "$b" = prisma-access-browser-stable ] && work=1 || other=1; done
+  if [ $work = 1 ] && [ $other = 1 ]; then
+    echo "WARNING: VM $NAME will hold Prisma Access Browser together with other browsers. They share one" >&2
+    echo "  account in the VM, so a compromised browser can read the others' cookies and sessions." >&2
+    echo "  Use one VM per trust level, e.g. --name work prisma and --name personal firefox." >&2
+  fi
+  return 0
+}
+
+
 prisma_prereqs() {
   vmsh <<'EOF'
 set -e
@@ -577,6 +597,7 @@ EOF
   # (no SVG), checked by their signature, under a file name chosen here.
   if [ -n "$icon" ] && safe_path "$icon" && [[ $icon == *.png ]] && fetch_icon "$icon" "$id"; then :; else icon=""; fi
   write_launcher "$pkg" "$name" "$exe" "$icon" "$wm"
+  grep -qx -- "$pkg" "$DIR/browsers" 2>/dev/null || echo "$pkg" >> "$DIR/browsers"
   gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 }
 
@@ -593,6 +614,7 @@ main() {
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
   setup_netguard
+  warn_mixing
   for b in "${BROWSERS[@]}"; do install_browser "$b"; done
   for r in "${RPMS[@]}"; do install_rpm "$r"; done
   log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"

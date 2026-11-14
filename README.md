@@ -46,11 +46,14 @@ your desktop (Wayland)                             VM (libvirt user session)
 ## Usage
 
 ```bash
-# Fedora 44 (downloaded and GPG-verified automatically) with Firefox and Chrome
-./vm-browser.sh firefox chrome
+# Fedora 44 (downloaded and GPG-verified automatically) with Firefox and Chrome, in a VM named "personal"
+./vm-browser.sh --name personal firefox chrome
 
 # Add Brave to the same VM later
-./vm-browser.sh brave
+./vm-browser.sh --name personal brave
+
+# Work browsing in its own VM
+./vm-browser.sh --name work prisma
 
 # RHEL 10 from the KVM guest image, registered with an activation key
 printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chmod 600 ~/.config/rhsm-activation
@@ -62,9 +65,9 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 # A browser from a local RPM
 ./vm-browser.sh --rpm ~/Downloads/some-browser.x86_64.rpm
 
-# Prisma Access Browser
-./vm-browser.sh prisma
 ```
+
+**Use one VM per trust level.** All browsers in a VM run as the same `browser` user, so a browser that gets compromised can read the other browsers' profiles, cookies and signed-in sessions. Keep work browsing (for example Prisma Access Browser and its corporate sessions) and personal browsing in separate VMs with `--name`. The script warns when Prisma Access Browser and other browsers would share a VM.
 
 | Option | Default | Meaning |
 |---|---|---|
