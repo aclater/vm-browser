@@ -338,10 +338,12 @@ EOF
 # command on the desktop.
 
 # clean_text: one line of printable text, at most 80 characters, for names shown on the desktop.
-clean_text() { LC_ALL=C tr -d '\000-\037\177' | head -c 80; }
+# C0 controls and DEL go, and so do C1 controls (U+0080-U+009F, which some terminals obey).
+clean_text() { LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C sed 's/\xc2[\x80-\x9f]//g' | head -c 80; }
 # safe_path / safe_word STRING: true if STRING is a plain command path, or a plain window class
-# or package name: no spaces, quotes or shell characters.
-safe_path() { [[ $1 =~ ^/?[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ && $1 != *..* && ${#1} -le 200 ]]; }
+# or package name: no spaces, quotes or shell characters. No part of a path may start with "-":
+# the command follows the host on ssh's command line, where ssh still reads options (-A, -X).
+safe_path() { [[ $1 =~ ^(/[A-Za-z0-9._+][A-Za-z0-9._+-]*|[A-Za-z0-9][A-Za-z0-9._+-]*)(/[A-Za-z0-9._+][A-Za-z0-9._+-]*)*$ && $1 != *..* && ${#1} -le 200 ]]; }
 safe_word() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && ${#1} -le 100 ]]; }
 # desktop_quote STRING: STRING as one argument of a .desktop Exec key (spec: double quotes,
 # with \ " ` $ escaped by a backslash).

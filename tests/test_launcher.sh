@@ -28,7 +28,8 @@ D='$T/home/.local/share/applications/vmb-testvm-testpkg.desktop'
 check "a plain command gives a launcher that runs it in the VM as one argument" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=2' && grep -qx /usr/bin/firefox \$T/calls"
 for evil in '/usr/bin/firefox;touch${IFS}/tmp/pwned' '$(touch /tmp/pwned)' '`touch /tmp/pwned`' \
-            '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox'; do
+            '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox' \
+            '-A' '-oProxyCommand=id' '/usr/bin/-x' 'bin/-X' '.hidden/x' '/usr//bin/x'; do
   check "a start command with shell characters is refused: $(printf '%q' "$evil")" \
     bash -c '! out=$(launcher_for "$1" 2>&1) && grep -q "refusing the start command" <<< "$out"' _ "$evil"
   check "  ...and no launcher is written" bash -c "[ ! -e $L ]"
@@ -51,3 +52,7 @@ fails "a package name with shell characters is refused" \
   bash -c 'source ./vm-browser.sh; NAME=t; make_launcher "x;id"'
 check "clean_text drops control characters and newlines" \
   bash -c 'source ./vm-browser.sh; [ "$(printf "a\033[2Jb\nc" | clean_text)" = "a[2Jbc" ]'
+check "clean_text drops C1 controls (8-bit CSI) but keeps other UTF-8 text" \
+  bash -c 'source ./vm-browser.sh; [ "$(printf "a\xc2\x9b2Jb\xc3\xa9" | clean_text)" = "$(printf "a2Jb\xc3\xa9")" ]'
+check "plain command paths are accepted" \
+  bash -c 'source ./vm-browser.sh; for p in /usr/bin/firefox /opt/google/chrome/google-chrome brave-browser /usr/lib64/c++/x_y.sh; do safe_path "$p" || exit 1; done'
