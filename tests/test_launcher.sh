@@ -17,7 +17,7 @@ launcher_for() {
   rm -rf "${T:?}/home" "${T:?}/calls"; mkdir -p "$T/home"
   HOME=$T/home bash -c '
     source ./vm-browser.sh
-    NAME=${4:-testvm} KEYF=$T/key KH=$T/kh PORT=2299 R_EXE=$1 R_NAME=${2:-Test Browser} R_WM=${3:-}
+    NAME=${4:-testvm} KEYF=$T/key BKEYF=$T/bkey KH=$T/kh PORT=2299 R_EXE=$1 R_NAME=${2:-Test Browser} R_WM=${3:-}
     vmsh() { cat >/dev/null; printf "%s\n%s\n\n%s\n" "$R_NAME" "$R_EXE" "$R_WM"; }
     make_launcher testpkg' _ "$@"
 }
@@ -25,8 +25,11 @@ export -f launcher_for
 L='$T/home/.local/bin/vmb-testvm-testpkg'
 D='$T/home/.local/share/applications/vmb-testvm-testpkg.desktop'
 
-check "a plain command gives a launcher that runs it in the VM as one argument" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=2' && grep -qx /usr/bin/firefox \$T/calls"
+# The guest's shell parses the command line ssh sends: it must give back the same arguments.
+check "the launcher runs the command in the VM with its arguments quoted (#7)" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=\$(id);c' \"two words\" && cmd=\$(grep '^/usr/bin/firefox' \$T/calls) && eval \"set -- \$cmd\" && [ \$# = 3 ] && [ \"\$2\" = 'https://example.test/?a=1&b=\$(id);c' ] && [ \"\$3\" = 'two words' ]"
+check "the launcher logs in with the browser key, not the admin key (#7)" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && grep -qx \$T/bkey \$T/calls && ! grep -qx \$T/key \$T/calls && grep -qx StrictHostKeyChecking=yes \$T/calls"
 for evil in '/usr/bin/firefox;touch${IFS}/tmp/pwned' '$(touch /tmp/pwned)' '`touch /tmp/pwned`' \
             '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox'; do
   check "a start command with shell characters is refused: $(printf '%q' "$evil")" \

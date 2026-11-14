@@ -12,3 +12,13 @@ check "RHEL defaults: version 10, name rhel10-browsers" \
   bash -c 'source ./vm-browser.sh; parse_args --os rhel firefox; [ "$VER" = 10 ] && [ "$NAME" = rhel10-browsers ]'
 check "browsers are collected in order" \
   bash -c 'source ./vm-browser.sh; parse_args firefox chrome; [ "${BROWSERS[*]}" = "firefox chrome" ]'
+
+# Option values go into paths, the domain XML, cloud-init and kickstart files (#7).
+for bad in "--name ../x" "--name a/b" "--name a.b" "--name -x" "--name x'y" "--name x;y" \
+           "--port 80" "--port 99999" "--port 22a" "--memory 0" "--memory 4G" "--cpus x" \
+           "--disk 12G;rm" "--disk 0" "--version 44/../x" "--version 4.4"; do
+  # shellcheck disable=SC2086  # split into option and value on purpose
+  fails "refused: $bad" bash -c 'source ./vm-browser.sh; parse_args "$@" firefox' _ $bad
+done
+check "accepted: --name work-1 --port 2240 --memory 8 --cpus 2 --disk 20G --version 43" \
+  bash -c 'source ./vm-browser.sh; parse_args --name work-1 --port 2240 --memory 8 --cpus 2 --disk 20G --version 43 firefox'
