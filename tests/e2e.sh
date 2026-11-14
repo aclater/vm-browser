@@ -33,9 +33,9 @@ L="$HOME/.local/bin/vmb-$NAME-firefox"
 grep -q '^Exec=' "$HOME/.local/share/applications/vmb-$NAME-firefox.desktop" || fail "no desktop entry"
 pass "launcher and desktop entry written"
 
-# The launcher's own ssh command, as the browser user: everything but its last exec line.
-SSH_LINE=$(grep '^SSH=' "$L")
-eval "$SSH_LINE"
+# The launcher's own ssh command, as the browser user: its value line and its SSH= line.
+SSH=()
+eval "$(grep -E '^(VM|SSH)=' "$L")"
 [ "$("${SSH[@]}" whoami)" = browser ] || fail "launcher does not log in as browser"
 "${SSH[@]}" 'sudo -n true' 2>/dev/null && fail "browser user has sudo"
 pass "launcher logs in as the unprivileged browser user"
@@ -46,4 +46,32 @@ if [ -n "${E2E_HOSTILE_SSH_CONFIG:-}" ]; then
   # shellcheck disable=SC2016  # expanded by the guest's shell
   [ -z "$("${SSH[@]}" 'echo "${SSH_AUTH_SOCK:-}${DISPLAY:-}"')" ] || fail "agent or X11 forwarded to the guest"
   pass "a hostile ~/.ssh/config (agent and X11 forwarding, RemoteCommand) is ignored"
+fi
+
+# #1: a package whose .desktop Exec carries shell code must not get a launcher. Needs rpmbuild.
+if command -v rpmbuild >/dev/null; then
+  R=$(mktemp -d)
+  cat > "$R/evil.spec" <<'SPEC'
+Name: vmb-evil
+Version: 1
+Release: 1
+Summary: vm-browser test package with a hostile .desktop file
+License: MIT
+BuildArch: noarch
+%description
+Test package for vm-browser's e2e test.
+%install
+mkdir -p %{buildroot}/usr/share/applications
+printf '%%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Evil' 'Exec=/usr/bin/true;touch${IFS}/tmp/vmb-e2e-pwned %%U' > %{buildroot}/usr/share/applications/vmb-evil.desktop
+%files
+/usr/share/applications/vmb-evil.desktop
+SPEC
+  rpmbuild -bb --quiet --define "_topdir $R" "$R/evil.spec" >/dev/null 2>&1 || fail "could not build the test RPM"
+  if out=$(./vm-browser.sh --name "$NAME" --rpm "$R"/RPMS/noarch/vmb-evil-1-1.noarch.rpm 2>&1); then
+    fail "a hostile .desktop Exec was accepted"
+  fi
+  grep -q 'refusing the start command' <<< "$out" || fail "hostile RPM failed for another reason: $out"
+  [ ! -e "$HOME/.local/bin/vmb-$NAME-vmb-evil" ] || fail "a launcher was written for the hostile RPM"
+  rm -rf "$R"
+  pass "an RPM whose .desktop Exec has shell code gets no launcher"
 fi

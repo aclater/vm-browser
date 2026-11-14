@@ -29,7 +29,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 - **Users:** the browser runs as an unprivileged `browser` user. Admin work uses a separate `admin` account with an SSH key and no password.
 - **SSH:** every connection to the VM, including the launchers', uses `ssh -F none`, so your `~/.ssh/config` and `/etc/ssh/ssh_config.d` don't apply. A `Host *` block there can't forward your SSH agent or X11 display into the VM.
 - **Repositories:** each browser comes from its vendor's signed repository (Google, Brave, Palo Alto Networks), or from Fedora/EPEL for Chromium and Firefox.
-- **Launchers:** each is built from the package's own `.desktop` file (name, command, icon and window class), so it appears in your app menu with the browser's real icon.
+- **Launchers:** each is built from the package's own `.desktop` file (name, command, icon and window class), so it appears in your app menu with the browser's real icon. The VM's answers are treated as hostile: the start command must be a plain path (letters, digits and `._+-/`) or the launcher isn't written, it goes into the launcher as a quoted value rather than code, and names are stripped of control characters.
 
 ## Requirements
 

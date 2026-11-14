@@ -320,6 +320,7 @@ EOF
 install_rpm() {
   local f=$1 pkg
   pkg=$(rpm -qp --qf '%{NAME}' "$f" 2>/dev/null) || die "not an RPM: $f"
+  safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg") in $f"
   log "Installing $pkg from $(basename "$f")"
   [ "$pkg" = prisma-access-browser-stable ] && prisma_prereqs
   scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "$f" admin@127.0.0.1:/var/tmp/vm-browser.rpm
@@ -331,9 +332,65 @@ EOF
   make_launcher "$pkg"
 }
 
+# ---------- launchers ----------
+# Everything the VM reports is untrusted: a malicious --rpm, a compromised repository or an
+# already compromised VM chooses it. It is validated here before it reaches a file or a
+# command on the desktop.
+
+# clean_text: one line of printable text, at most 80 characters, for names shown on the desktop.
+# C0 controls and DEL go, and so do C1 controls (U+0080-U+009F, which some terminals obey).
+clean_text() { LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C sed 's/\xc2[\x80-\x9f]//g' | head -c 80; }
+# safe_path / safe_word STRING: true if STRING is a plain command path, or a plain window class
+# or package name: no spaces, quotes or shell characters. No part of a path may start with "-":
+# the command follows the host on ssh's command line, where ssh still reads options (-A, -X).
+safe_path() { [[ $1 =~ ^(/[A-Za-z0-9._+][A-Za-z0-9._+-]*|[A-Za-z0-9][A-Za-z0-9._+-]*)(/[A-Za-z0-9._+][A-Za-z0-9._+-]*)*$ && $1 != *..* && ${#1} -le 200 ]]; }
+safe_word() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && ${#1} -le 100 ]]; }
+# desktop_quote STRING: STRING as one argument of a .desktop Exec key (spec: double quotes,
+# with \ " ` $ escaped by a backslash).
+desktop_quote() { local q=${1//\\/\\\\}; q=${q//\"/\\\"}; q=${q//\`/\\\`}; q=${q//\$/\\\$}; printf '"%s"' "$q"; }
+
+# write_launcher PKG NAME EXE ICON-FILE WM: writes the launcher script and the menu entry from
+# validated values. EXE is refused unless it is a plain path; NAME is cleaned; WM falls back to
+# EXE's file name.
+write_launcher() {
+  local pkg=$1 name exe=$3 iconf=$4 wm=$5 id bin
+  name=$(printf '%s' "$2" | clean_text); [ -n "$name" ] || name=$pkg
+  safe_path "$exe" || die "refusing the start command the VM reported for $pkg: $(printf '%q' "$exe")"
+  safe_word "$wm" || wm=$(basename "$exe")
+  id="vmb-$NAME-$pkg"; bin="$HOME/.local/bin/$id"
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+  # The values go in as shell-quoted assignments; the rest of the script is fixed text.
+  {
+    echo '#!/bin/bash'
+    echo "# vm-browser launcher. Generated; rerun vm-browser.sh to change it."
+    printf 'VM=%q KEY=%q KH=%q PORT=%q EXE=%q\n' "$NAME" "$KEYF" "$KH" "$PORT" "$exe"
+    cat <<'LAUNCHER'
+export LIBVIRT_DEFAULT_URI=qemu:///session
+SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
+[ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
+for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
+exec waypipe --no-gpu "${SSH[@]}" "$EXE" "$@"
+LAUNCHER
+  } > "$bin"
+  chmod 755 "$bin"
+  {
+    echo '[Desktop Entry]'
+    echo 'Type=Application'
+    echo "Name=$name ($(printf '%s' "$NAME" | clean_text))"
+    echo 'Comment=Runs in an isolated VM'
+    echo "Exec=$(desktop_quote "$bin")"
+    if [ -n "$iconf" ]; then echo "Icon=$id"; else echo 'Icon=web-browser'; fi
+    echo 'Terminal=false'
+    echo 'Categories=Network;WebBrowser;'
+    echo "StartupWMClass=$wm"
+  } > "$HOME/.local/share/applications/$id.desktop"
+  echo "Launcher: '$name ($NAME)' in your app menu ($bin)"
+}
+
 # Builds the launcher from the package's own .desktop file: name, command, icon, window class.
 make_launcher() {
-  local pkg=$1 info name exe icon wm id ext
+  local pkg=$1 info name exe icon wm id ext dest
+  safe_word "$pkg" || die "refusing package name $(printf '%q' "$pkg")"
   info=$(vmsh "$pkg" <<'EOF'
 d=$(rpm -ql "$1" | grep -E '^/usr/share/applications/[^/]+\.desktop$' | head -1)
 [ -n "$d" ] || { echo "no desktop file in $1" >&2; exit 1; }
@@ -348,37 +405,19 @@ wm=$(get StartupWMClass)
 echo "$(get Name)"; echo "$exe"; echo "$p"; echo "${wm:-$(basename "$exe")}"
 EOF
 )
-  { read -r name; read -r exe; read -r icon; read -r wm; } <<< "$info"
+  { read -r name; read -r exe; read -r icon; read -r wm; } <<< "$info" || true   # $(...) drops empty last lines
   [ -n "$exe" ] || die "could not find how to start $pkg"
   id="vmb-$NAME-$pkg"
-  if [ -n "$icon" ]; then
-    local dest; ext=${icon##*.}; dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
-    mkdir -p "$dest"; scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext"
+  # Only a plain .png or .svg path is fetched, and the file name on the desktop is fixed here.
+  if [ -n "$icon" ] && safe_path "$icon" && [[ $icon =~ \.(png|svg)$ ]]; then
+    ext=${icon##*.}; dest="$HOME/.local/share/icons/hicolor/$([ "$ext" = svg ] && echo scalable || echo 256x256)/apps"
+    mkdir -p "$dest"
+    scp -q -F none -i "$KEYF" -o IdentitiesOnly=yes -o UserKnownHostsFile="$KH" -P "$PORT" "admin@127.0.0.1:$icon" "$dest/$id.$ext" || icon=""
+  else
+    icon=""
   fi
-  mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
-  cat > "$HOME/.local/bin/$id" <<EOF
-#!/bin/bash
-# vm-browser launcher: $name in VM $NAME
-export LIBVIRT_DEFAULT_URI=qemu:///session
-SSH=(ssh -F none -i "$KEYF" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p $PORT browser@127.0.0.1)
-[ "\$(virsh domstate $NAME 2>/dev/null)" = running ] || virsh start $NAME >/dev/null
-for _ in \$(seq 1 60); do "\${SSH[@]}" true 2>/dev/null && break; sleep 2; done
-exec waypipe --no-gpu "\${SSH[@]}" $exe "\$@"
-EOF
-  chmod 755 "$HOME/.local/bin/$id"
-  cat > "$HOME/.local/share/applications/$id.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=$name ($NAME)
-Comment=Runs in the isolated VM $NAME
-Exec=$HOME/.local/bin/$id
-Icon=$id
-Terminal=false
-Categories=Network;WebBrowser;
-StartupWMClass=$wm
-EOF
+  write_launcher "$pkg" "$name" "$exe" "$icon" "$wm"
   gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-  echo "Launcher: '$name ($NAME)' in your app menu ($HOME/.local/bin/$id)"
 }
 
 # ---------- main ----------
@@ -394,7 +433,7 @@ main() {
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   for b in "${BROWSERS[@]}"; do install_browser "$b"; done
   for r in "${RPMS[@]}"; do install_rpm "$r"; done
-  log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}'); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
+  log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"
 }
 
 # Run only when executed, not when sourced (tests/run.sh sources it to test single functions).
