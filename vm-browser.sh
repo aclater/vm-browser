@@ -435,13 +435,13 @@ end_maintenance() {
   # in this VM, and its session must not become the installed system.
   flock -w 120 8 || die "could not lock $RUN/lock"
   if open_sessions; then die "a browser of VM $NAME was opened during this run (an older launcher?); this run's changes are discarded"; fi
-  flock -u 8
   if is_disposable; then
     commit_overlay || die "could not write the changes into $DIR/base.qcow2"
   else
     mv "$DIR/disk.qcow2" "$DIR/base.qcow2"; chmod 400 "$DIR/base.qcow2"
   fi
   fresh_overlay || die "could not make an overlay on $DIR/base.qcow2"
+  flock -u 8
   rm -f "$RUN/maintenance"; trap - EXIT
 }
 # setup_updates: automatic updates reboot a persistent VM when they need to. In a disposable VM
@@ -780,7 +780,7 @@ if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
     "${SSH[@]}" 'systemctl is-active dnf5-automatic.service dnf-automatic.service | grep -qxE "activating|active|deactivating|reloading"' 2>/dev/null || break
     sleep 30
   done
-  flock -w 120 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
+  flock -w 120 9; others || maintaining || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
   # A shutdown is a request the guest carries out; a compromised guest could ignore it. If it is
   # still running after the wait (2 minutes) and no launcher has opened since, switch it off.
   for _ in $(seq 1 "${VMB_SHUTDOWN_WAIT:-120}"); do
