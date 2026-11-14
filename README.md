@@ -12,7 +12,8 @@ The browser and anything it installs stay inside the VM: root services, kernel h
 - **Guest OS:** Fedora or RHEL, any version. It starts from a cloud/KVM image or installs unattended from an installer ISO.
 - **No root needed** after installing a few packages. Everything runs in your own libvirt session.
 - **Small:** about 3–5 GB of disk (thin-provisioned) and roughly 1 GB of RAM with a few tabs open.
-- **Self-updating:** the VM installs OS and browser updates daily and reboots when an update needs it.
+- **Runs only while used:** the VM starts when you open a browser and shuts down when you close the last one.
+- **Self-updating:** while it runs, the VM installs OS and browser updates daily and reboots when an update needs it.
 
 ## How it works
 
@@ -82,7 +83,7 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 ### Daily use
 
 - **Open a browser:** use its menu entry. The VM starts automatically.
-- **Stop the VM:** `virsh -c qemu:///session shutdown <vm>`
+- **Close it:** when the last browser window of a VM closes, the VM shuts down, after any update that is running in it has finished. To keep it running, start the launcher with `VMB_KEEP_RUNNING=1`, or stop it by hand: `virsh -c qemu:///session shutdown <vm>`.
 - **Admin shell:** `ssh -F none -i ~/.local/share/vm-browser/<vm>/id_ed25519 -o UserKnownHostsFile=~/.local/share/vm-browser/<vm>/known_hosts -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
 - **Remove a VM:**
   ```bash
@@ -96,7 +97,8 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 - **Fedora image downloads** are used only if the release's `CHECKSUM` file is signed by that release's key, and only the signed part of the file is read. The key fingerprints for Fedora 42–47 are pinned in the script (`FEDORA_KEYS`). For any other release, the script stops: pass `--image` with an image you've verified, or add the release's key.
 - **Chromium on RHEL** comes from EPEL, so the script enables CodeReady Builder and EPEL.
 - **ISO installs** boot the installer kernel straight from the ISO and supply a kickstart on a second virtual disc labelled `OEMDRV`, so `virt-install` isn't needed. DVD ISOs install from the disc. Fedora netinstall ISOs use Fedora's mirrors through a metalink, which pins the hash of the repository metadata (and so of every package), and RHEL boot ISOs register with the activation key during installation. The install files that hold the key are deleted however the install ends, and the copies Anaconda leaves in the VM are removed during setup.
-- **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Their reboots close any open browser window.
+- **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Because the VM is off while no browser is open, a daily run it missed happens within an hour of its next start, and a reboot it needs closes any open browser window.
+- **The VM is kept between sessions:** its disk persists, so anything that compromises it stays until you remove the VM and create it again (see "Remove a VM"). Stopping it when you're done means it isn't online in between. A disposable mode that discards changes at shutdown is tracked in [#9](https://github.com/aclater/vm-browser/issues/9).
 - **Display:** the browser renders on the VM's CPU, since there's no GPU passthrough. That's fine for documents and web apps, but not for games or heavy video.
 - **Windows and the clipboard:** the browser's windows reach your desktop through waypipe, as an ordinary Wayland client. While one of them has focus it can read your clipboard, including a password you've just copied, and it can draw any window, so a compromised browser could imitate a login or system dialog. Launchers ask for a security context (`waypipe --secctx vm-browser.<vm>`), so compositors that support it, such as Sway and Hyprland, can identify these windows and withhold privileged protocols: screen capture, virtual keyboards and clipboard managers. GNOME (checked on GNOME 51) doesn't offer the protocol, so launchers there run without it. GNOME doesn't give those privileged protocols to ordinary windows either, which leaves the clipboard and look-alike windows.
 

@@ -8,7 +8,9 @@ cd "$(dirname "$0")/.."
 NAME=${E2E_NAME:-vmb-e2e-$$}
 export LIBVIRT_DEFAULT_URI=qemu:///session
 D="$HOME/.local/share/vm-browser/$NAME"
+sway_pid=""
 cleanup() {
+  [ -z "$sway_pid" ] || kill "$sway_pid" 2>/dev/null || true
   # A RHEL VM is unregistered first, so it doesn't stay listed in the Red Hat account.
   if [ -f "$D/id_ed25519" ] && [ -f "$D/port" ]; then
     ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
@@ -71,7 +73,7 @@ if [ -n "${E2E_SWAY:-}" ]; then
     sleep 2
   done
   swaymsg -t get_tree 2>/dev/null | grep -E '"(app_id|sandbox_engine|sandbox_app_id)"' | sort -u || true
-  kill "$launcher_pid" 2>/dev/null || true; kill "$sway_pid" 2>/dev/null || true
+  kill "$launcher_pid" 2>/dev/null || true   # Sway keeps running for the launches below
   [ -n "$found" ] || { tail -20 "$XDG_RUNTIME_DIR/launcher.log" "$XDG_RUNTIME_DIR/sway.log" >&2; fail "no window with the VM's security context"; }
   pass "the browser's window reaches the compositor through waypipe, with the security context vm-browser.$NAME"
 fi
@@ -141,3 +143,14 @@ SPEC
   rm -rf "$R"
   pass "an RPM whose .desktop Exec has shell code gets no launcher"
 fi
+
+# #9: when the last launcher closes, the VM shuts down; the next launch starts it again, and
+# the network guard is back after that boot. "firefox --version" opens no window.
+"$L" --version >/dev/null 2>&1 || fail "the launcher could not run firefox --version"
+for _ in $(seq 1 60); do [ "$(virsh domstate "$NAME")" = "shut off" ] && break; sleep 3; done
+[ "$(virsh domstate "$NAME")" = "shut off" ] || fail "the VM is still running after its last launcher closed"
+pass "the VM shut down after its last launcher closed"
+"$L" --version | grep -q 'Mozilla Firefox' || fail "the launcher did not start the VM again"
+VMB_KEEP_RUNNING=1 "$L" --version >/dev/null 2>&1 || true
+"${ASSH[@]}" 'sudo nft list table inet vm_browser' >/dev/null || fail "the network guard is not loaded after a reboot"
+pass "the launcher starts the VM again; the network guard is loaded at boot"

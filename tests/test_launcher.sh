@@ -10,6 +10,12 @@ for c in virsh ssh waypipe scp gtk-update-icon-cache; do
   chmod +x "$T/stubs/$c"
 done
 export PATH="$T/stubs:$PATH"
+# ssh answers "no update running" to the launcher's check before it stops the VM (#9).
+cat > "$T/stubs/ssh" <<'STUB'
+#!/bin/bash
+printf '%s\n' ssh "$@" -- >> "$T/calls"
+case "${*: -1}" in *is-active*) exit "${UPDATE_RUNNING:-1}";; esac
+STUB
 
 # launcher_for EXE [NAME] [WM] [VM-NAME]: runs make_launcher with a stubbed VM that reports
 # these values for package "testpkg", in a fresh HOME. Prints nothing; files land in $T/home.
@@ -70,3 +76,19 @@ check "without the protocol (GNOME) it runs waypipe again without --secctx" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && NOSECCTX=1 $L 2>/dev/null && [ \$(grep -cx waypipe \$T/calls) = 2 ] && [ \$(grep -cx -- --secctx \$T/calls) = 1 ]"
 check "a browser that exits with an error is not started a second time" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(grep -cx waypipe \$T/calls) = 1 ]"
+
+# Stopping the VM when the last launcher closes (#9). The stub waypipe can keep a "window"
+# open for BROWSER_SECONDS.
+cat > "$T/stubs/waypipe" <<'STUB'
+#!/bin/bash
+printf '%s\n' waypipe "$@" -- >> "$T/calls"
+sleep "${BROWSER_SECONDS:-0}"
+STUB
+check "closing the only browser shuts the VM down" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run1 $L && grep -A1 -x virsh \$T/calls | grep -qx shutdown"
+check "closing one of two browsers leaves the VM running; closing the second stops it" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && export XDG_RUNTIME_DIR=\$T/run2 && (BROWSER_SECONDS=3 $L &) && sleep 1 && $L && ! grep -qx shutdown \$T/calls && sleep 4 && [ \$(grep -cx shutdown \$T/calls) = 1 ]"
+check "a launcher that died doesn't keep the VM running" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && mkdir -p -m 700 \$T/run3/vm-browser-testvm && touch \$T/run3/vm-browser-testvm/session.999999 && XDG_RUNTIME_DIR=\$T/run3 $L && grep -qx shutdown \$T/calls"
+check "VMB_KEEP_RUNNING=1 leaves the VM running" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run4 VMB_KEEP_RUNNING=1 $L && ! grep -qx shutdown \$T/calls"

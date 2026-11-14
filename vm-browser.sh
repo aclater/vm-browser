@@ -486,17 +486,41 @@ write_launcher() {
     cat <<'LAUNCHER'
 export LIBVIRT_DEFAULT_URI=qemu:///session
 SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=3 -o UserKnownHostsFile="$KH" -p "$PORT" browser@127.0.0.1)
+# One session file per open launcher, so the VM can be stopped when the last one closes.
+RUN="${XDG_RUNTIME_DIR:-/tmp/vm-browser-$(id -u)}/vm-browser-$VM"; mkdir -p -m 700 "$RUN"
+exec 9>"$RUN/lock"
+flock 9; touch "$RUN/session.$$"
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
-for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
+flock -u 9
+for _ in $(seq 1 60); do
+  "${SSH[@]}" true 2>/dev/null && break
+  # A VM that was still shutting down when this launcher started: start it again.
+  [ "$(virsh domstate "$VM" 2>/dev/null)" != "shut off" ] || virsh start "$VM" >/dev/null 2>&1
+  sleep 2
+done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
 CMD="$EXE$(printf ' %q' "$@")"
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
-# that support it (Sway, Hyprland, KDE, ...) can tell them apart and withhold privileged
-# protocols. Compositors without it (GNOME) make waypipe stop at once: then run it without.
+# that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
+# Compositors without it (GNOME) make waypipe stop at once: then run it without.
 err=$(mktemp); trap 'rm -f "$err"' EXIT
-waypipe --secctx "vm-browser.$VM" --no-gpu "${SSH[@]}" "$CMD" 2> >(tee "$err" >&2); rc=$?; wait $! 2>/dev/null
+waypipe --secctx "vm-browser.$VM" --no-gpu "${SSH[@]}" "$CMD" 2> >(tee "$err" >&2) 9>&-; rc=$?; wait $! 2>/dev/null
 if [ $rc -ne 0 ] && grep -q wp_security_context_manager_v1 "$err"; then
-  waypipe --no-gpu "${SSH[@]}" "$CMD"; rc=$?
+  waypipe --no-gpu "${SSH[@]}" "$CMD" 9>&-; rc=$?
+fi
+# The last window closed: stop the VM, so it isn't running, online, while nothing uses it.
+# An automatic update that is running in the VM finishes first. VMB_KEEP_RUNNING=1 skips this.
+others() {   # true if another launcher of this VM is still open (session files of dead ones are removed)
+  local f; for f in "$RUN"/session.*; do [ -e "$f" ] && ! kill -0 "${f##*.}" 2>/dev/null && rm -f "$f"; done
+  compgen -G "$RUN/session.*" >/dev/null
+}
+flock 9; rm -f "$RUN/session.$$"; others; last=$?; flock -u 9
+if [ $last -ne 0 ] && [ -z "${VMB_KEEP_RUNNING:-}" ]; then
+  for _ in $(seq 1 120); do   # up to an hour
+    "${SSH[@]}" 'systemctl is-active --quiet dnf5-automatic.service dnf-automatic.service' 2>/dev/null || break
+    sleep 30
+  done
+  flock 9; others || virsh shutdown "$VM" >/dev/null 2>&1; flock -u 9
 fi
 exit $rc
 LAUNCHER
