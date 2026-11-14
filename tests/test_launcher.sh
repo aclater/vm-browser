@@ -1,0 +1,53 @@
+# shellcheck shell=bash disable=SC2016  # the checks are bash -c scripts, expanded when they run
+# Launchers (#1): what the VM reports about a package (.desktop Name, Exec, Icon,
+# StartupWMClass) is hostile input. It must never become a command on the desktop.
+
+# A fake desktop: HOME under $T, and stubs for virsh, ssh and waypipe that record their
+# arguments, one per line, in $T/calls.
+mkdir -p "$T/stubs"
+for c in virsh ssh waypipe scp gtk-update-icon-cache; do
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s" "$@" "--" >> "$T/calls"\n[ "%s" != virsh ] || [ "$1" != domstate ] || echo running\n' "$c" "$c" > "$T/stubs/$c"
+  chmod +x "$T/stubs/$c"
+done
+export PATH="$T/stubs:$PATH"
+
+# launcher_for EXE [NAME] [WM] [VM-NAME]: runs make_launcher with a stubbed VM that reports
+# these values for package "testpkg", in a fresh HOME. Prints nothing; files land in $T/home.
+launcher_for() {
+  rm -rf "${T:?}/home" "${T:?}/calls"; mkdir -p "$T/home"
+  HOME=$T/home bash -c '
+    source ./vm-browser.sh
+    NAME=${4:-testvm} KEYF=$T/key KH=$T/kh PORT=2299 R_EXE=$1 R_NAME=${2:-Test Browser} R_WM=${3:-}
+    vmsh() { cat >/dev/null; printf "%s\n%s\n\n%s\n" "$R_NAME" "$R_EXE" "$R_WM"; }
+    make_launcher testpkg' _ "$@"
+}
+export -f launcher_for
+L='$T/home/.local/bin/vmb-testvm-testpkg'
+D='$T/home/.local/share/applications/vmb-testvm-testpkg.desktop'
+
+check "a plain command gives a launcher that runs it in the VM as one argument" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=2' && grep -qx /usr/bin/firefox \$T/calls"
+for evil in '/usr/bin/firefox;touch${IFS}/tmp/pwned' '$(touch /tmp/pwned)' '`touch /tmp/pwned`' \
+            '/usr/bin/a|sh' '/usr/bin/a&&id' 'firefox"' "firefox'" '../../bin/sh' 'fire fox'; do
+  check "a start command with shell characters is refused: $(printf '%q' "$evil")" \
+    bash -c '! out=$(launcher_for "$1" 2>&1) && grep -q "refusing the start command" <<< "$out"' _ "$evil"
+  check "  ...and no launcher is written" bash -c "[ ! -e $L ]"
+done
+# The VM answers one value per line, so a newline in a value shifts the rest: the shifted
+# values are still checked.
+check "an extra line from the VM shifts the values, and the shifted command is refused" \
+  bash -c "! out=\$(launcher_for /usr/bin/firefox \$'Evil\nExec=/bin/sh -c pwned' 2>&1) && grep -q 'refusing the start command' <<< \"\$out\" && [ ! -e $L ]"
+check "a name with control characters (escape sequences, CR, tab) is cleaned in the menu entry" \
+  bash -c "launcher_for /usr/bin/firefox \$'Evil\033]0;x\a\r\tName' && grep -qx 'Name=Evil]0;xName (testvm)' $D && [ \$(wc -l < $D) = 9 ]"
+check "a window class with shell characters falls back to the command's name" \
+  bash -c "launcher_for /usr/bin/firefox Firefox 'x;y' && grep -qx StartupWMClass=firefox $D"
+check "the menu entry's Exec is the launcher, quoted for the .desktop format" \
+  bash -c "launcher_for /usr/bin/firefox && grep -qx \"Exec=\\\"\$T/home/.local/bin/vmb-testvm-testpkg\\\"\" $D"
+check "desktop_quote escapes quotes, backslashes, backticks and dollars" \
+  bash -c 'source ./vm-browser.sh; [ "$(desktop_quote "/a b/\"\\\`\$x")" = "\"/a b/\\\"\\\\\\\`\\\$x\"" ]'
+check "the launcher's VM name is a quoted value, not code" \
+  bash -c 'launcher_for /usr/bin/firefox "" "" "a b'"'"'\$(id)" && bash -n "$T/home/.local/bin/vmb-a b'"'"'\$(id)-testpkg" && rm -f "$T/calls" && "$T/home/.local/bin/vmb-a b'"'"'\$(id)-testpkg" && grep -qx "a b'"'"'\$(id)" "$T/calls"'
+fails "a package name with shell characters is refused" \
+  bash -c 'source ./vm-browser.sh; NAME=t; make_launcher "x;id"'
+check "clean_text drops control characters and newlines" \
+  bash -c 'source ./vm-browser.sh; [ "$(printf "a\033[2Jb\nc" | clean_text)" = "a[2Jbc" ]'
