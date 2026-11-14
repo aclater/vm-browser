@@ -89,6 +89,7 @@ Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"
 ## Notes
 
 - **Prisma Access Browser** installs a root service that loads eBPF hooks to protect the browser's processes. If the kernel's security-module list lacks `bpf`, its installer rewrites the boot command line in a way that drops SELinux. The script checks for `bpf` first and refuses to continue without it. Current Fedora and RHEL kernels include it.
+- **Fedora image downloads** are used only if the release's `CHECKSUM` file is signed by that release's key, and only the signed part of the file is read. The key fingerprints for Fedora 42–47 are pinned in the script (`FEDORA_KEYS`). For any other release, the script stops: pass `--image` with an image you've verified, or add the release's key.
 - **Chromium on RHEL** comes from EPEL, so the script enables CodeReady Builder and EPEL.
 - **ISO installs** boot the installer kernel straight from the ISO and supply a kickstart on a second virtual disc labelled `OEMDRV`, so `virt-install` isn't needed. DVD ISOs install from the disc. Fedora netinstall ISOs use Fedora's mirrors, and RHEL boot ISOs register with the activation key during installation.
 - **Automatic updates** use `dnf5-automatic` on Fedora and `dnf-automatic` on RHEL. Their reboots close any open browser window.
