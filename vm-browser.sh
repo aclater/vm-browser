@@ -19,11 +19,13 @@ Options:
   --name NAME          VM name (default: <os><version>-browsers)
   --port N             Local SSH port (default: first free from 2230)
   --memory GiB         RAM (default 4)   --cpus N (default 4)   --disk SIZE (default 12G)
+  --lan                Let the VM reach your local network (default: blocked;
+                       the desktop's own services stay blocked either way)
   -h, --help
 EOF
 }
 
-OS=fedora VER="" IMAGE="" RHSM="" NAME="" PORT="" MEM=4 CPUS=4 DISK=12G
+OS=fedora VER="" IMAGE="" RHSM="" NAME="" PORT="" MEM=4 CPUS=4 DISK=12G LAN=0
 BROWSERS=() RPMS=()
 parse_args() {
 while [ $# -gt 0 ]; do
@@ -31,7 +33,7 @@ while [ $# -gt 0 ]; do
     --os) OS=$2; shift 2;; --version) VER=$2; shift 2;; --image) IMAGE=$(realpath "$2"); shift 2;;
     --rhsm) RHSM=$(realpath "$2"); shift 2;; --rpm) RPMS+=("$(realpath "$2")"); shift 2;;
     --name) NAME=$2; shift 2;; --port) PORT=$2; shift 2;; --memory) MEM=$2; shift 2;;
-    --cpus) CPUS=$2; shift 2;; --disk) DISK=$2; shift 2;; -h|--help) usage; exit 0;;
+    --cpus) CPUS=$2; shift 2;; --disk) DISK=$2; shift 2;; --lan) LAN=1; shift;; -h|--help) usage; exit 0;;
     chrome|chromium|brave|firefox|prisma) BROWSERS+=("$1"); shift;;
     *) echo "Unknown argument: $1"; usage; exit 1;;
   esac
@@ -324,6 +326,72 @@ EOF
   : > "$DIR/browser-key-installed"
 }
 
+# ---------- network guard ----------
+# passt hands the guest's traffic for the gateway address to the desktop's 127.0.0.1, so
+# without this the browser could reach every loopback-only service on the desktop (CUPS,
+# keyboard sharing, other VMs' SSH ports, dev servers). An nftables table in the guest drops
+# that, and by default the private and link-local networks too (the LAN), leaving DNS, DHCP
+# and the internet. It runs at every boot, after the network is up, from the gateway the guest
+# has then. Root in the guest could remove it; the browser runs without root.
+# --lan keeps the LAN reachable (the gateway stays blocked).
+setup_netguard() {
+  log "Network guard (desktop loopback blocked; LAN $([ "$LAN" = 1 ] && echo allowed || echo blocked))"
+  vmsh "$LAN" <<'EOF'
+set -e
+rpm -q nftables >/dev/null 2>&1 || dnf -y -q install nftables
+install -d /etc/vm-browser
+echo "ALLOW_LAN=$1" > /etc/vm-browser/netguard.conf
+cat > /usr/local/sbin/vm-browser-netguard <<'GUARD'
+#!/bin/bash
+# vm-browser: drop the guest's traffic to the gateway (passt maps it to the desktop's
+# loopback) and, unless ALLOW_LAN=1, to private and link-local networks. DNS and DHCP pass.
+set -euo pipefail
+ALLOW_LAN=0; . /etc/vm-browser/netguard.conf
+gw4=$(ip -4 route show default | awk '{print $3; exit}')
+gw6=$(ip -6 route show default | awk '{print $3; exit}')
+{
+  echo 'table inet vm_browser'; echo 'delete table inet vm_browser'
+  echo 'table inet vm_browser {'
+  echo ' chain out {'
+  echo '  type filter hook output priority 0; policy accept;'
+  echo '  ct state established,related accept'
+  echo '  oif "lo" accept'
+  echo '  meta l4proto { udp, tcp } th dport 53 accept'
+  echo '  meta l4proto udp udp dport { 67, 547 } accept'
+  echo '  meta l4proto ipv6-icmp accept'
+  [ -z "$gw4" ] || echo "  ip daddr $gw4 counter reject"
+  [ -z "$gw6" ] || echo "  ip6 daddr $gw6 counter reject"
+  if [ "$ALLOW_LAN" != 1 ]; then
+    echo '  ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject'
+    echo '  ip6 daddr { fc00::/7, fe80::/10 } counter reject'
+  fi
+  echo ' }'
+  echo '}'
+} | nft -f -
+GUARD
+chmod 755 /usr/local/sbin/vm-browser-netguard
+cat > /etc/systemd/system/vm-browser-netguard.service <<'UNIT'
+[Unit]
+Description=vm-browser: block the desktop's loopback and the LAN
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vm-browser-netguard
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+restorecon /usr/local/sbin/vm-browser-netguard /etc/systemd/system/vm-browser-netguard.service 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable vm-browser-netguard.service >/dev/null 2>&1
+systemctl restart vm-browser-netguard.service
+nft list table inet vm_browser >/dev/null
+EOF
+}
+
 # ---------- browsers ----------
 prisma_prereqs() {
   vmsh <<'EOF'
@@ -500,6 +568,7 @@ main() {
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
+  setup_netguard
   for b in "${BROWSERS[@]}"; do install_browser "$b"; done
   for r in "${RPMS[@]}"; do install_rpm "$r"; done
   log "Done. VM $NAME: $(vm 'df -h / | tail -1' | awk '{print $3" used of "$2}' | clean_text); disk file $(du -h "$DIR/disk.qcow2" | cut -f1)"

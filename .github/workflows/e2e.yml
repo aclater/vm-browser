@@ -55,7 +55,7 @@ jobs:
           # container is a throwaway on a throwaway runner; the script still runs as a normal user.
           docker run --rm --privileged \
             -v "$GITHUB_WORKSPACE:/src:ro" "$IMAGE" bash -euo pipefail -c '
-              dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img rpm-build sway \
+              dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img rpm-build sway python3 \
                 passt waypipe genisoimage openssh-clients curl gnupg2 iproute procps-ng util-linux shadow-utils rpm >/dev/null
               useradd -m ci
               # /run/user/<uid>, as on a desktop (the runner'"'"'s AppArmor profile for passt expects it).

@@ -26,6 +26,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 ```
 
 - **Networking:** the VM uses `passt`. Its SSH is forwarded to `127.0.0.1` only, so it isn't reachable from your network.
+- **What the VM can reach:** passt hands the VM's traffic for its gateway address to your desktop's `127.0.0.1`, which would expose every service that listens only there: printing (CUPS), keyboard and mouse sharing, other VMs' SSH ports, development servers. A firewall inside the VM (an nftables table loaded at every boot) rejects that traffic, and by default also traffic to private and link-local networks, so your LAN, router and NAS are out of reach too. DNS, DHCP and the internet work. `--lan` keeps the LAN reachable; your desktop's own services stay blocked either way. The rules are enforced inside the VM: they stop the browser, which has no root rights, but a root compromise of the VM could remove them.
 - **Users:** the browser runs as an unprivileged `browser` user, which the launchers reach with their own SSH key. Admin work uses a separate `admin` account with a different key and no password.
 - **Host key:** the script makes the VM's SSH host key itself and pins it in `known_hosts` before the VM first boots. Nothing else that might be listening on the local port is trusted with commands or credentials.
 - **SSH:** every connection to the VM, including the launchers', uses `ssh -F none`, so your `~/.ssh/config` and `/etc/ssh/ssh_config.d` don't apply. A `Host *` block there can't forward your SSH agent or X11 display into the VM.
@@ -74,6 +75,7 @@ printf 'org=1234567\nkey=my-activation-key\n' > ~/.config/rhsm-activation && chm
 | `--name NAME` | `<os><version>-browsers` | VM name (letters, digits and hyphens); use different names for separate VMs |
 | `--port N` | first free from 2230 | Local SSH port |
 | `--memory GiB` / `--cpus N` / `--disk SIZE` | 4 / 4 / 12G | VM size (the disk is thin-provisioned) |
+| `--lan` | off | Let the VM reach your local network. Your desktop's own services stay blocked |
 
 Each browser gets a menu entry called **"&lt;Browser name&gt; (&lt;VM name&gt;)"**, with a script in `~/.local/bin/vmb-<vm>-<package>`.
 

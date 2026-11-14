@@ -76,6 +76,29 @@ if [ -n "${E2E_SWAY:-}" ]; then
   pass "the browser's window reaches the compositor through waypipe, with the security context vm-browser.$NAME"
 fi
 
+# #2: a service on the desktop's loopback must be unreachable from the guest (passt maps the
+# gateway address to it), while DNS and the internet work. Control: with the guard removed the
+# same service is reachable, so the check means something.
+LPORT=$((20000 + RANDOM % 20000))
+python3 -m http.server --bind 127.0.0.1 "$LPORT" >/dev/null 2>&1 & http_pid=$!
+sleep 1
+ASSH=(ssh -F none -i "$D/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" -p "$(cat "$D/port")" admin@127.0.0.1)
+GW=$("${ASSH[@]}" "ip -4 route show default | awk '{print \$3; exit}'")
+probe() { "${SSH[@]}" "timeout 5 bash -c 'exec 3<>/dev/tcp/$1/$2' 2>/dev/null && echo open || echo closed"; }
+[ "$(probe "$GW" "$LPORT")" = closed ] || fail "the guest reaches the desktop's loopback ($GW:$LPORT)"
+"${ASSH[@]}" 'sudo nft delete table inet vm_browser'
+reached=$(probe "$GW" "$LPORT")
+"${ASSH[@]}" 'sudo systemctl restart vm-browser-netguard'
+[ "$reached" = open ] || fail "control failed: without the guard the desktop's loopback wasn't reachable either"
+[ "$(probe "$GW" "$LPORT")" = closed ] || fail "the guard did not come back"
+kill "$http_pid" 2>/dev/null || true
+"${SSH[@]}" 'curl -sSf -o /dev/null https://fedoraproject.org/' || fail "the browser account can't reach the internet"
+pass "the desktop's loopback is blocked (open without the guard), the internet works"
+if [ -n "${E2E_LAN_TARGET:-}" ]; then   # host:port of a LAN service the desktop itself can reach
+  [ "$(probe "${E2E_LAN_TARGET%:*}" "${E2E_LAN_TARGET#*:}")" = closed ] || fail "the guest reaches the LAN ($E2E_LAN_TARGET)"
+  pass "the LAN ($E2E_LAN_TARGET) is blocked"
+fi
+
 # #7: the VM's host key is pinned, and the admin and browser accounts have separate keys.
 A=(ssh -F none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" -p "$(cat "$D/port")")
 { [ "$(wc -l < "$D/known_hosts")" = 1 ] && grep -q ' ssh-ed25519 ' "$D/known_hosts"; } || fail "known_hosts is not one pinned ed25519 key"
