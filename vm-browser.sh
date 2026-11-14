@@ -68,8 +68,8 @@ setup() {
   # Separate keys for the admin account (sudo) and the browser account the launchers use, and
   # the VM's own SSH host key, made here so known_hosts is pinned before the VM first boots.
   KEYF="$DIR/id_ed25519"; BKEYF="$DIR/browser_ed25519"; HKEYF="$DIR/ssh_host_ed25519_key"; KH="$DIR/known_hosts"
-  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg; do
-    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2"
+  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg ip; do
+    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute"
   done
 }
 
@@ -590,7 +590,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$up" ] || { rm -f "$RUN/session.$$"; echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-CMD="$EXE$(printf ' %q' "$@")"
+CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
 # that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
 # GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
