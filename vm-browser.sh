@@ -421,7 +421,16 @@ SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostK
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-exec waypipe --no-gpu "${SSH[@]}" "$EXE$(printf ' %q' "$@")"
+CMD="$EXE$(printf ' %q' "$@")"
+# --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
+# that support it (Sway, Hyprland, KDE, ...) can tell them apart and withhold privileged
+# protocols. Compositors without it (GNOME) make waypipe stop at once: then run it without.
+err=$(mktemp); trap 'rm -f "$err"' EXIT
+waypipe --secctx "vm-browser.$VM" --no-gpu "${SSH[@]}" "$CMD" 2> >(tee "$err" >&2); rc=$?; wait $! 2>/dev/null
+if [ $rc -ne 0 ] && grep -q wp_security_context_manager_v1 "$err"; then
+  waypipe --no-gpu "${SSH[@]}" "$CMD"; rc=$?
+fi
+exit $rc
 LAUNCHER
   } > "$bin"
   chmod 755 "$bin"

@@ -54,3 +54,19 @@ fails "a package name with shell characters is refused" \
   bash -c 'source ./vm-browser.sh; NAME=t; make_launcher "x;id"'
 check "clean_text drops control characters and newlines" \
   bash -c 'source ./vm-browser.sh; [ "$(printf "a\033[2Jb\nc" | clean_text)" = "a[2Jbc" ]'
+
+# waypipe --secctx (#3). The stub waypipe fails like waypipe on GNOME when NOSECCTX is set.
+cat > "$T/stubs/waypipe" <<'STUB'
+#!/bin/bash
+printf '%s\n' waypipe "$@" -- >> "$T/calls"
+if [ "$1" = --secctx ] && [ -n "${NOSECCTX:-}" ]; then
+  echo 'Error: "src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global"' >&2; exit 1
+fi
+exit "${BROWSER_EXIT:-0}"
+STUB
+check "the launcher asks for a security context named after the VM" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && [ \$(grep -cx waypipe \$T/calls) = 1 ] && grep -A1 -x -- --secctx \$T/calls | grep -qx vm-browser.testvm"
+check "without the protocol (GNOME) it runs waypipe again without --secctx" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && NOSECCTX=1 $L 2>/dev/null && [ \$(grep -cx waypipe \$T/calls) = 2 ] && [ \$(grep -cx -- --secctx \$T/calls) = 1 ]"
+check "a browser that exits with an error is not started a second time" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(grep -cx waypipe \$T/calls) = 1 ]"
