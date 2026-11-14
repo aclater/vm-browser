@@ -53,7 +53,10 @@ jobs:
           # --privileged: passt sandboxes itself in a user namespace, which needs to write its
           # uid_map; Docker's default profile denies that even with seccomp unconfined. The
           # container is a throwaway on a throwaway runner; the script still runs as a normal user.
-          docker run --rm --privileged \
+          # --init: tini as PID 1 reaps the VM's processes when they exit (qemu, passt and
+          # virtlogd daemonize). Without it they stay zombies, libvirt takes them for alive and
+          # every virsh call stalls once a VM has shut down.
+          docker run --rm --init --privileged \
             -v "$GITHUB_WORKSPACE:/src:ro" "$IMAGE" bash -euo pipefail -c '
               dnf -y -q --setopt=install_weak_deps=False install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img rpm-build sway python3 \
                 passt waypipe genisoimage openssh-clients curl gnupg2 iproute procps-ng util-linux shadow-utils rpm >/dev/null
