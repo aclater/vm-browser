@@ -429,7 +429,22 @@ SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostK
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
 CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
-exec waypipe --no-gpu "${SSH[@]}" "$CMD"
+# --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
+# that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
+# GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
+# checked here, on the desktop, by a short-lived local waypipe client, never from what comes
+# back over the connection to the VM, so the VM can't talk the launcher out of it.
+SECCTX=()
+probe=$(mktemp -d); trap 'rm -rf "$probe"' EXIT
+waypipe --secctx "vm-browser.$VM" -s "$probe/s" client 2>/dev/null & pp=$!
+for i in $(seq 1 60); do   # up to 3 s; on GNOME it fails within milliseconds
+  kill -0 "$pp" 2>/dev/null || break
+  if [ "$i" -ge 4 ] && [ -e "$probe/s" ]; then SECCTX=(--secctx "vm-browser.$VM"); break; fi
+  sleep 0.05
+done
+kill "$pp" 2>/dev/null; wait "$pp" 2>/dev/null
+waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD"; rc=$?
+exit $rc
 LAUNCHER
   } > "$bin"
   chmod 755 "$bin"

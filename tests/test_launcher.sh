@@ -61,3 +61,30 @@ check "clean_text drops C1 controls (8-bit CSI) but keeps other UTF-8 text" \
   bash -c 'source ./vm-browser.sh; [ "$(printf "a\xc2\x9b2Jb\xc3\xa9" | clean_text)" = "$(printf "a2Jb\xc3\xa9")" ]'
 check "plain command paths are accepted" \
   bash -c 'source ./vm-browser.sh; for p in /usr/bin/firefox /opt/google/chrome/google-chrome brave-browser /usr/lib64/c++/x_y.sh; do safe_path "$p" || exit 1; done'
+
+# waypipe --secctx (#3). Whether the compositor offers wp_security_context_v1 is probed on the
+# desktop with a local "waypipe client". The stub fails that probe like waypipe on GNOME when
+# NOSECCTX is set; otherwise its probe stays up with its socket, like waypipe on Sway.
+cat > "$T/stubs/waypipe" <<'STUB'
+#!/bin/bash
+printf '%s\n' waypipe "$@" -- >> "$T/calls"
+if [ "${*: -1}" = client ]; then
+  [ -z "${NOSECCTX:-}" ] || { echo 'Error: "src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global"' >&2; exit 1; }
+  while [ $# -gt 0 ]; do [ "$1" = -s ] && touch "$2"; shift; done; echo $$ > "$T/probe-pid"; exec sleep 30
+fi
+[ -z "${VM_SAYS:-}" ] || echo "$VM_SAYS" >&2   # what the VM prints on the ssh connection
+exit "${BROWSER_EXIT:-0}"
+STUB
+# runs: the waypipe calls that ran the browser (not the probe), one line each.
+runs() { awk '/^waypipe$/{c=""; r=1; next} /^--$/{if(r) print c; r=0; next} {c=c" "$0}' "$T/calls" | grep -v ' client$'; }
+export -f runs
+check "the launcher asks for a security context named after the VM where the compositor offers one" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && [ \$(runs | wc -l) = 1 ] && runs | grep -q -- ' --secctx vm-browser.testvm '"
+check "without the protocol (GNOME) the launcher runs waypipe once, without --secctx" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && NOSECCTX=1 $L && [ \$(runs | wc -l) = 1 ] && ! runs | grep -q -- --secctx"
+check "a VM that prints waypipe's no-secctx error and fails gets no second run without --secctx" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! VM_SAYS='Error: \"src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global\"' BROWSER_EXIT=1 $L 2>/dev/null && [ \$(runs | wc -l) = 1 ] && runs | grep -q -- --secctx"
+check "a browser that exits with an error is not started a second time" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(runs | wc -l) = 1 ]"
+check "the probe's local waypipe client is stopped" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/probe-pid && $L && [ -s \$T/probe-pid ] && ! kill -0 \$(cat \$T/probe-pid) 2>/dev/null"

@@ -54,6 +54,28 @@ if [ -n "${E2E_HOSTILE_SSH_CONFIG:-}" ]; then
   pass "a hostile ~/.ssh/config (agent and X11 forwarding, RemoteCommand) is ignored"
 fi
 
+# #3: open the browser through the launcher on a headless Sway, which supports
+# wp_security_context_v1, and check that Sway sees its window with the VM's security context.
+# CI only (E2E_SWAY=1; needs sway, swaymsg and an XDG_RUNTIME_DIR of our own).
+if [ -n "${E2E_SWAY:-}" ]; then
+  export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
+  printf 'output HEADLESS-1 resolution 1280x800\n' > "$XDG_RUNTIME_DIR/sway.conf"
+  sway -c "$XDG_RUNTIME_DIR/sway.conf" > "$XDG_RUNTIME_DIR/sway.log" 2>&1 & sway_pid=$!
+  for _ in $(seq 1 50); do compgen -G "$XDG_RUNTIME_DIR/sway-ipc.*" >/dev/null && break; sleep 0.2; done
+  WAYLAND_DISPLAY=$(basename "$(compgen -G "$XDG_RUNTIME_DIR/wayland-[0-9]" | head -1)")
+  SWAYSOCK=$(compgen -G "$XDG_RUNTIME_DIR/sway-ipc.*" | head -1); export WAYLAND_DISPLAY SWAYSOCK
+  "$L" about:blank > "$XDG_RUNTIME_DIR/launcher.log" 2>&1 & launcher_pid=$!
+  found=""
+  for _ in $(seq 1 90); do
+    if swaymsg -t get_tree 2>/dev/null | grep -q "\"sandbox_app_id\": \"vm-browser.$NAME\""; then found=1; break; fi
+    sleep 2
+  done
+  swaymsg -t get_tree 2>/dev/null | grep -E '"(app_id|sandbox_engine|sandbox_app_id)"' | sort -u || true
+  kill "$launcher_pid" 2>/dev/null || true; kill "$sway_pid" 2>/dev/null || true
+  [ -n "$found" ] || { tail -20 "$XDG_RUNTIME_DIR/launcher.log" "$XDG_RUNTIME_DIR/sway.log" >&2; fail "no window with the VM's security context"; }
+  pass "the browser's window reaches the compositor through waypipe, with the security context vm-browser.$NAME"
+fi
+
 # #7: the VM's host key is pinned, and the admin and browser accounts have separate keys.
 A=(ssh -F none -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$D/known_hosts" -p "$(cat "$D/port")")
 { [ "$(wc -l < "$D/known_hosts")" = 1 ] && grep -q ' ssh-ed25519 ' "$D/known_hosts"; } || fail "known_hosts is not one pinned ed25519 key"
