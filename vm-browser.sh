@@ -428,7 +428,7 @@ SSH=(ssh -F none -i "$KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostK
 [ "$(virsh domstate "$VM" 2>/dev/null)" = running ] || virsh start "$VM" >/dev/null
 for _ in $(seq 1 60); do "${SSH[@]}" true 2>/dev/null && break; sleep 2; done
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-CMD="$EXE$(printf ' %q' "$@")"
+CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
 # that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
 # GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
