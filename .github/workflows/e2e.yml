@@ -42,6 +42,11 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Ubuntu's AppArmor profiles for passt attach to /usr/bin/passt by path, so they would
+          # also confine the container's passt and deny its user namespace. Unload them here.
+          for f in /etc/apparmor.d/*passt* /etc/apparmor.d/*pasta*; do
+            [ -f "$f" ] && { echo "unloading $f"; sudo apparmor_parser -R "$f" || true; }
+          done
           ls -l /dev/kvm
       - name: End-to-end test in a Fedora container
         run: |
