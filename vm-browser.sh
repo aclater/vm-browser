@@ -557,7 +557,7 @@ up=""
 for _ in $(seq 1 60); do "${SSH[@]}" systemctl is-active --quiet vm-browser-netguard.service 2>/dev/null && { up=1; break; }; sleep 2; done
 [ -n "$up" ] || { echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-CMD="$EXE$(printf ' %q' "$@")"
+CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
 # that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
 # GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
