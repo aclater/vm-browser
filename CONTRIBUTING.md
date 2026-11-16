@@ -30,6 +30,13 @@ problems** go through a private report instead: see [SECURITY.md](SECURITY.md).
 5. Update the docs with the code: options and anything a user should know in README.md, and
    what was tested in TESTING.md.
 
+## Coding agents
+
+[AGENTS.md](AGENTS.md) is a short summary of this file for AI coding agents; `CLAUDE.md` only
+points to it. Agents read these files as instructions, so changes to them, and to `.claude/`
+or `.mcp.json`, are reviewed like workflow changes. `tests/run.sh` refuses hidden text in them
+and agent configuration in the repository.
+
 ## Workflows
 
 - Actions are pinned by commit SHA with the version in a comment, and container images by
