@@ -78,9 +78,30 @@ setup() {
   # Separate keys for the admin account (sudo) and the browser account the launchers use, and
   # the VM's own SSH host key, made here so known_hosts is pinned before the VM first boots.
   KEYF="$DIR/id_ed25519"; BKEYF="$DIR/browser_ed25519"; HKEYF="$DIR/ssh_host_ed25519_key"; KH="$DIR/known_hosts"
-  for c in virsh qemu-img passt waypipe genisoimage isoinfo ssh scp curl gpgv gpg ip; do
-    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute"
+  for c in virsh qemu-img passt waypipe xorriso xorrisofs ssh scp curl gpgv gpg ip; do
+    command -v "$c" >/dev/null || die "missing $c. Install: sudo dnf install libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe xorriso openssh-clients curl gnupg2 iproute"
   done
+}
+
+# ---------- ISO files (xorriso, which Fedora and RHEL both ship) ----------
+# make_iso OUT LABEL FILE...: a small ISO (Joliet and Rock Ridge) with FILE... at its root.
+make_iso() {
+  local out=$1 label=$2 msg; shift 2
+  msg=$(xorrisofs -quiet -o "$out" -V "$label" -J -r "$@" 2>&1) || die "could not make $out: $msg"
+}
+# iso_label ISO: the volume label.
+iso_label() { xorriso -indev "$1" -pvd_info 2>/dev/null | sed -n 's/^Volume Id *: //p'; }
+# iso_has_packages ISO: true for a DVD that carries its own package repository.
+iso_has_packages() { xorriso -indev "$1" -find / -maxdepth 2 -type d 2>/dev/null | grep -qxE "'/(BaseOS/repodata|repodata|Packages)'"; }
+# iso_extract ISO PATH OUT: copies PATH out of the ISO. Only a regular file is accepted: an ISO
+# can hold a symlink there, which xorriso would recreate pointing at a file on this desktop, or
+# a directory, which it would copy whole. The type is checked in the ISO first and on disk after.
+iso_extract() {
+  rm -f "$3"
+  xorriso -indev "$1" -find "$2" -maxdepth 0 -type f 2>/dev/null | grep -qxF "'$2'" || return 1
+  xorriso -osirrox on -indev "$1" -extract "$2" "$3" >/dev/null 2>&1 && [ ! -L "$3" ] && [ -f "$3" ] && return
+  if [ -d "$3" ] && [ ! -L "$3" ]; then chmod -R u+w "$3"; fi
+  rm -rf "$3"; return 1
 }
 
 # ---------- VM creation (skipped if the VM already exists) ----------
@@ -212,7 +233,7 @@ $(sed 's/^/    /' "$HKEYF")
 EOF
   )
   printf 'instance-id: %s\nlocal-hostname: %s\n' "$NAME" "$NAME" > "$DIR/meta-data"
-  ( umask 077; genisoimage -quiet -o "$DIR/seed.iso" -V cidata -J -r "$DIR/user-data" "$DIR/meta-data" )
+  ( umask 077; make_iso "$DIR/seed.iso" cidata "$DIR/user-data" "$DIR/meta-data" )
   rm -f "$DIR/user-data"   # it holds the host key; the seed disc keeps a copy for cloud-init
   domain_xml "" "<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$DIR/seed.iso'/><target dev='sda' bus='sata'/><readonly/></disk>" > "$DIR/domain.xml"
   virsh define "$DIR/domain.xml" >/dev/null && virsh start "$NAME" >/dev/null
@@ -221,12 +242,13 @@ EOF
 install_from_iso() {
   log "Installing $OS $VER from $(basename "$IMAGE") (unattended; 10-30 minutes)"
   local label src="" lesc
-  label=$(isoinfo -d -i "$IMAGE" | sed -n 's/^Volume id: //p')
+  label=$(iso_label "$IMAGE")
+  # The label goes into the VM's definition and the installer's command line: plain text only.
+  [[ $label =~ ^[A-Za-z0-9._\ -]+$ ]] || die "unexpected volume label in $IMAGE"
   lesc=$(printf '%s' "$label" | sed 's/ /\\x20/g')
-  isoinfo -R -i "$IMAGE" -x /images/pxeboot/vmlinuz > "$DIR/vmlinuz"
-  isoinfo -R -i "$IMAGE" -x /images/pxeboot/initrd.img > "$DIR/initrd.img"
-  [ -s "$DIR/vmlinuz" ] && [ -s "$DIR/initrd.img" ] || die "no installer kernel in $IMAGE"
-  if isoinfo -R -f -i "$IMAGE" | grep -qE '^/(BaseOS/repodata|repodata|Packages)$'; then src="cdrom"
+  { iso_extract "$IMAGE" /images/pxeboot/vmlinuz "$DIR/vmlinuz" && iso_extract "$IMAGE" /images/pxeboot/initrd.img "$DIR/initrd.img" \
+    && [ -s "$DIR/vmlinuz" ] && [ -s "$DIR/initrd.img" ]; } || die "no installer kernel in $IMAGE"
+  if iso_has_packages "$IMAGE"; then src="cdrom"
   elif [ "$OS" = fedora ]; then
     # A metalink, not a mirrorlist: it comes over TLS from Fedora and carries the hash of the
     # repository metadata, which in turn hashes every package, so a mirror can't swap packages.
@@ -269,7 +291,7 @@ EOF
   # The install files hold the host key and, for boot ISOs, the activation key: removed however
   # the install ends.
   trap 'virsh destroy "$NAME" >/dev/null 2>&1; rm -rf "$DIR/ks" "$DIR/oemdrv.iso" "$DIR/vmlinuz" "$DIR/initrd.img" "$DIR/install.xml"' EXIT
-  ( umask 077; genisoimage -quiet -o "$DIR/oemdrv.iso" -V OEMDRV -J -r "$DIR/ks" ); rm -rf "$DIR/ks"
+  ( umask 077; make_iso "$DIR/oemdrv.iso" OEMDRV "$DIR/ks" ); rm -rf "$DIR/ks"
   qemu-img create -q -f qcow2 "$DIR/disk.qcow2" "$DISK"
   local cds="<disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$IMAGE'/><target dev='sda' bus='sata'/><readonly/></disk>
     <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='$DIR/oemdrv.iso'/><target dev='sdb' bus='sata'/><readonly/></disk>"
