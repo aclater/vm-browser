@@ -13,7 +13,7 @@ A RHEL 10.2 VM (KVM, registered, BaseOS and AppStream only) stood in for the des
 | Fedora 45 netinstall ISO (`--version 45`): kernel and initrd read from the ISO with xorriso, installed through the metalink | pass |
 | Firefox opened through the launcher on mutter: it ran with the forwarded Wayland display for over 6 minutes; closing it ended the launcher and shut the VM down | pass |
 
-The first run found that RHEL's waypipe 0.8 can't start the VM's waypipe 0.11 when the browser user's SSH sessions have no `XDG_RUNTIME_DIR`, as in a minimal Fedora install without `systemd-pam`. Guests now get `systemd-pam`, and `tests/e2e.sh` checks for the runtime directory. RHEL 9 desktops have the same packages (checked against CentOS Stream 9) but weren't run.
+RHEL's waypipe 0.8 starts the VM's waypipe 0.11 only if the browser user's SSH sessions have `XDG_RUNTIME_DIR`, which needs `systemd-pam` in the guest; guests install it, and `tests/e2e.sh` checks for it. RHEL 9 desktops have the same packages (checked against CentOS Stream 9) but weren't run.
 
 ## Disposable mode, tested 2026-11-14
 
