@@ -22,7 +22,7 @@ You need a Fedora desktop running Wayland, with KVM, 4 GB of free memory and 5 G
 1. Install the packages and get the script:
 
    ```
-   sudo dnf install -y git libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe genisoimage openssh-clients curl gnupg2 iproute
+   sudo dnf install -y git libvirt-client libvirt-daemon-kvm qemu-kvm qemu-img passt waypipe xorriso openssh-clients curl gnupg2 iproute
    git clone https://github.com/aclater/vm-browser.git
    cd vm-browser
    ```

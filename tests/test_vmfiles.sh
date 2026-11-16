@@ -7,7 +7,7 @@ check "cloud images: cloud-init gets the pinned host key, and the user-data file
     OS=fedora VER=44 NAME=ci-test DIR=$T/ci-dir MEM=4 CPUS=4 DISK=12G PORT=2299 IMAGE=$T/img.qcow2 DOWNLOADED=0
     rm -rf "$DIR"; mkdir -p "$DIR"; : > "$IMAGE"; HKEYF=$DIR/hostkey; ssh-keygen -q -t ed25519 -N "" -C test -f "$HKEYF"
     qemu-img() { :; }; virsh() { :; }
-    genisoimage() { cp "$DIR/user-data" "$T/ud-out"; local o; while [ $# -gt 0 ]; do [ "$1" = -o ] && o=$2; shift; done; : > "$o"; }
+    make_iso() { cp "$DIR/user-data" "$T/ud-out"; : > "$1"; }
     install_from_cloud_image "ssh-ed25519 AAAATEST admin" >/dev/null
     grep -q "^  ed25519_private: |$" "$T/ud-out" && grep -q "^    -----BEGIN OPENSSH PRIVATE KEY-----$" "$T/ud-out" \
       && grep -qx "  ed25519_public: $(cut -d" " -f1,2 "$HKEYF.pub")" "$T/ud-out" && [ ! -e "$DIR/user-data" ]'
