@@ -12,6 +12,14 @@ check "cloud images: cloud-init gets the pinned host key, and the user-data file
     grep -q "^  ed25519_private: |$" "$T/ud-out" && grep -q "^    -----BEGIN OPENSSH PRIVATE KEY-----$" "$T/ud-out" \
       && grep -qx "  ed25519_public: $(cut -d" " -f1,2 "$HKEYF.pub")" "$T/ud-out" && [ ! -e "$DIR/user-data" ]'
 
+check "cloud images: a read-only image gives a disk the VM can write, readable only by you" \
+  bash -c '
+    source ./vm-browser.sh
+    OS=fedora VER=44 NAME=ro-test DIR=$T/ro-dir MEM=4 CPUS=4 DISK=12G PORT=2299 IMAGE=$T/ro.qcow2 DOWNLOADED=0
+    rm -rf "$DIR"; mkdir -p "$DIR"; echo image > "$IMAGE"; chmod 444 "$IMAGE"; HKEYF=$DIR/hostkey; ssh-keygen -q -t ed25519 -N "" -C test -f "$HKEYF"
+    qemu-img() { [ -w "$DIR/disk.qcow2" ]; }; virsh() { :; }; make_iso() { : > "$1"; }
+    install_from_cloud_image "ssh-ed25519 AAAATEST admin" >/dev/null && [ "$(stat -c %a "$DIR/disk.qcow2")" = 600 ]'
+
 # fetch_icon with a stubbed VM that serves local files.
 icon_ok() {
   rm -rf "$T/ih"; mkdir -p "$T/ih"
