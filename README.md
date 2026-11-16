@@ -185,4 +185,4 @@ tests are covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-vm-browser is licensed under the GNU General Public License, version 3 only ([LICENSE](LICENSE)).
+vm-browser is licensed under the GNU General Public License, version 3 or (at your option) any later version ([LICENSE](LICENSE)).
