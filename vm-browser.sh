@@ -94,11 +94,14 @@ iso_label() { xorriso -indev "$1" -pvd_info 2>/dev/null | sed -n 's/^Volume Id *
 # iso_has_packages ISO: true for a DVD that carries its own package repository.
 iso_has_packages() { xorriso -indev "$1" -find / -maxdepth 2 -type d 2>/dev/null | grep -qxE "'/(BaseOS/repodata|repodata|Packages)'"; }
 # iso_extract ISO PATH OUT: copies PATH out of the ISO. Only a regular file is accepted: an ISO
-# can hold a symlink there, which xorriso would recreate pointing at a file on this desktop.
+# can hold a symlink there, which xorriso would recreate pointing at a file on this desktop, or
+# a directory, which it would copy whole. The type is checked in the ISO first and on disk after.
 iso_extract() {
   rm -f "$3"
+  xorriso -indev "$1" -find "$2" -maxdepth 0 -type f 2>/dev/null | grep -qxF "'$2'" || return 1
   xorriso -osirrox on -indev "$1" -extract "$2" "$3" >/dev/null 2>&1 && [ ! -L "$3" ] && [ -f "$3" ] && return
-  rm -f "$3"; return 1
+  if [ -d "$3" ] && [ ! -L "$3" ]; then chmod -R u+w "$3"; fi
+  rm -rf "$3"; return 1
 }
 
 # ---------- VM creation (skipped if the VM already exists) ----------
@@ -240,6 +243,8 @@ install_from_iso() {
   log "Installing $OS $VER from $(basename "$IMAGE") (unattended; 10-30 minutes)"
   local label src="" lesc
   label=$(iso_label "$IMAGE")
+  # The label goes into the VM's definition and the installer's command line: plain text only.
+  [[ $label =~ ^[A-Za-z0-9._\ -]+$ ]] || die "unexpected volume label in $IMAGE"
   lesc=$(printf '%s' "$label" | sed 's/ /\\x20/g')
   { iso_extract "$IMAGE" /images/pxeboot/vmlinuz "$DIR/vmlinuz" && iso_extract "$IMAGE" /images/pxeboot/initrd.img "$DIR/initrd.img" \
     && [ -s "$DIR/vmlinuz" ] && [ -s "$DIR/initrd.img" ]; } || die "no installer kernel in $IMAGE"

@@ -5,8 +5,13 @@
 mkdir -p "$T/iso/dvd/images/pxeboot" "$T/iso/dvd/BaseOS/repodata" "$T/iso/net/images/pxeboot" "$T/iso/evil/images/pxeboot" "$T/iso/ks"
 for d in dvd net; do echo kernel > "$T/iso/$d/images/pxeboot/vmlinuz"; echo initrd > "$T/iso/$d/images/pxeboot/initrd.img"; done
 ln -s /etc/passwd "$T/iso/evil/images/pxeboot/vmlinuz"; echo initrd > "$T/iso/evil/images/pxeboot/initrd.img"
+mkdir -p "$T/iso/dir/images/pxeboot/vmlinuz/sub"; echo x > "$T/iso/dir/images/pxeboot/vmlinuz/sub/f"; ln -s /etc/passwd "$T/iso/dir/images/pxeboot/vmlinuz/link"
+chmod 555 "$T/iso/dir/images/pxeboot/vmlinuz/sub" "$T/iso/dir/images/pxeboot/vmlinuz"; echo initrd > "$T/iso/dir/images/pxeboot/initrd.img"
 echo 'text' > "$T/iso/ks/ks.cfg"
-for d in dvd net evil; do xorrisofs -quiet -o "$T/$d.iso" -V "Test-$d-x86_64" -J -r "$T/iso/$d" 2>/dev/null; done
+for d in dvd net evil dir; do xorrisofs -quiet -o "$T/$d.iso" -V "Test-$d-x86_64" -J -r "$T/iso/$d" 2>/dev/null; done
+chmod -R u+w "$T/iso/dir"
+xorrisofs -quiet -o "$T/badlabel.iso" -V 'a</cmdline><x' -J -r "$T/iso/net" 2>/dev/null
+xorrisofs -quiet -o "$T/tablabel.iso" -V "$(printf 'A\tinst.ks=x')" -J -r "$T/iso/net" 2>/dev/null
 
 check "make_iso: a folder's files go to the disc's root, with the label given" \
   bash -c 'source ./vm-browser.sh; make_iso "$T/oem.iso" OEMDRV "$T/iso/ks" && [ "$(iso_label "$T/oem.iso")" = OEMDRV ] \
@@ -21,6 +26,8 @@ check "iso_extract replaces a file left from an earlier run" \
   bash -c 'source ./vm-browser.sh; echo old > "$T/k2"; chmod 444 "$T/k2"; iso_extract "$T/dvd.iso" /images/pxeboot/vmlinuz "$T/k2" && grep -qx kernel "$T/k2"'
 check "a symlink in the ISO is refused, and no link is left" \
   bash -c 'source ./vm-browser.sh; ! iso_extract "$T/evil.iso" /images/pxeboot/vmlinuz "$T/ek" && [ ! -e "$T/ek" ] && [ ! -L "$T/ek" ]'
+check "a directory in the ISO is refused, and nothing is extracted" \
+  bash -c 'source ./vm-browser.sh; ! iso_extract "$T/dir.iso" /images/pxeboot/vmlinuz "$T/dk" && [ ! -e "$T/dk" ] && [ ! -L "$T/dk" ]'
 check "a file missing from the ISO is refused" \
   bash -c 'source ./vm-browser.sh; ! iso_extract "$T/net.iso" /nope "$T/nk" && [ ! -e "$T/nk" ]'
 check "a DVD's package repository is found, and a netinstall ISO has none" \
@@ -29,3 +36,9 @@ check "an installer ISO whose kernel is a symlink is refused before anything boo
   bash -c 'source ./vm-browser.sh; OS=fedora VER=45 NAME=evil DIR=$T/evil-dir IMAGE=$T/evil.iso; mkdir -p "$DIR"
     virsh() { echo "virsh called" >&2; return 1; }
     if out=$(install_from_iso key 2>&1); then exit 1; fi; grep -q "no installer kernel" <<<"$out" && ! grep -q "virsh called" <<<"$out" && [ ! -L "$DIR/vmlinuz" ]'
+for l in badlabel tablabel; do
+  check "an installer ISO with markup or a tab in its label is refused ($l)" \
+    bash -c 'source ./vm-browser.sh; OS=fedora VER=45 NAME=lbl DIR=$T/lbl-dir IMAGE=$T/$1.iso; mkdir -p "$DIR"
+      virsh() { echo "virsh called" >&2; return 1; }
+      if out=$(install_from_iso key 2>&1); then exit 1; fi; grep -q "unexpected volume label" <<<"$out" && ! grep -q "virsh called" <<<"$out"' _ "$l"
+done
