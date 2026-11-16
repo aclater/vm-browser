@@ -27,7 +27,8 @@ problems** go through a private report instead: see [SECURITY.md](SECURITY.md).
 4. Treat everything that comes from the guest (package metadata, `.desktop` files, icons,
    command output) as hostile: validate it before it goes into a file or a command on the
    desktop, and add a test to `tests/` that feeds it a hostile value.
-5. Update README.md with the code: options, what was tested, and anything a user should know.
+5. Update the docs with the code: options and anything a user should know in README.md, and
+   what was tested in TESTING.md.
 
 ## Workflows
 
