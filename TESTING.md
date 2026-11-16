@@ -2,6 +2,12 @@
 
 What was tested, where, and the result. Every pull request that changes the script runs ShellCheck, the unit checks in `tests/run.sh` (no VM needed) and the end-to-end test `tests/e2e.sh`, which builds a real Fedora VM on GitHub's runner. The end-to-end test also runs weekly. Running the checks yourself is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Agent guidance, tested 2026-11-16
+
+The two commands in AGENTS.md are the `shellcheck` and `tests` jobs of the `ci` workflow (Fedora 44 container), which passed on the pull request that added the file.
+
+`tests/test_agentfiles.sh` has 49 unit checks. They feed the agent-file check hostile copies and it refuses each: a zero-width character, a right-to-left override, an escape sequence, a carriage return, an HTML comment, five forms of `@` import, a file over 60 lines, extra text in CLAUDE.md, and CLAUDE.md as a symlink. It also refuses fifteen other agent files, each both in a plain directory and tracked in a git checkout: `CLAUDE.local.md`, `AGENTS.override.md`, nested `CLAUDE.md` and `AGENTS.md`, `.mcp.json`, settings, rules and commands under `.claude/` (including `settings.local.json` and `.Claude/`), names with a double quote or a non-ASCII byte, and `.claude` as a symlink. Untracked local settings in a git checkout pass.
+
 ## RHEL 10 desktop, tested 2026-11-16
 
 A RHEL 10.2 VM (KVM, registered, BaseOS and AppStream only) stood in for the desktop: libvirt 12.5, passt, xorriso 1.5.6, waypipe 0.8.6, and GNOME's mutter 49 running headless as the compositor. The quick start's `dnf install` line installed everything without EPEL.
