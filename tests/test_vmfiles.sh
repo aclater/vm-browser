@@ -50,3 +50,11 @@ check "an --rpm is copied into a private folder made in the VM, not a fixed path
   bash -c 'rpm_install >/dev/null && grep -qx admin@127.0.0.1:/var/tmp/vm-browser.Ab12/browser.rpm "$T/rpm-scp" && grep -qx /var/tmp/vm-browser.Ab12 "$T/rpm-args" && grep -q "admin 700" "$T/rpm-script" && ! grep -q vm-browser.rpm vm-browser.sh'
 fails "a folder name from the VM with shell characters is refused" \
   bash -c 'VM_TMP="/tmp/x;id" rpm_install'
+
+# ensure_systemd_pam with a stubbed VM: installs the package only where it's missing.
+check "a VM without systemd-pam gets it on the next run" \
+  bash -c 'source ./vm-browser.sh; vm() { return 1; }; vmsh() { cat > "$T/pam-script"; }; rm -f "$T/pam-script"
+    ensure_systemd_pam && grep -qx "dnf -y -q install systemd-pam" "$T/pam-script"'
+check "a VM that has systemd-pam is left alone" \
+  bash -c 'source ./vm-browser.sh; vm() { return 0; }; vmsh() { echo called > "$T/pam-called"; }; rm -f "$T/pam-called"
+    ensure_systemd_pam && [ ! -e "$T/pam-called" ]'

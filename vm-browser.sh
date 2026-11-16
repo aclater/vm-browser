@@ -318,6 +318,9 @@ wait_vm() {
 }
 reboot_vm() { vm 'sudo systemctl reboot' >/dev/null 2>&1 || true; sleep 20; wait_vm; }
 
+# VMs set up before base_setup installed systemd-pam get it on their next run.
+ensure_systemd_pam() { vm 'rpm -q systemd-pam' >/dev/null 2>&1 || vmsh <<< 'dnf -y -q install systemd-pam'; }
+
 base_setup() {
   log "Preparing the VM (updates, display support, automatic updates)"
   if [ "$OS" = rhel ]; then
@@ -901,6 +904,7 @@ main() {
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
+  ensure_systemd_pam
   setup_netguard
   setup_updates
   warn_mixing
