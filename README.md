@@ -182,3 +182,7 @@ Windows opened on the desktop for Prisma Access Browser (Fedora and RHEL guests)
 
 Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md). Changes and their
 tests are covered in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+vm-browser is licensed under the GNU General Public License, version 3 only ([LICENSE](LICENSE)).

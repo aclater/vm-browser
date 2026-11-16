@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
 # vm-browser: run web browsers in a small, isolated Fedora or RHEL VM and show them on this desktop (Wayland, via waypipe).
 # Runs as your normal user (libvirt user session). See README.md.
 set -euo pipefail
