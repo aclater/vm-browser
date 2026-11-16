@@ -215,6 +215,7 @@ EOF
 install_from_cloud_image() {
   log "Creating the VM from $(basename "$IMAGE")"
   if [ "${DOWNLOADED:-0}" = 1 ]; then mv "$IMAGE" "$DIR/disk.qcow2"; else cp --sparse=always "$IMAGE" "$DIR/disk.qcow2"; fi
+  chmod 600 "$DIR/disk.qcow2"   # the copy keeps the image's mode, and a read-only one can't be resized
   qemu-img resize -q "$DIR/disk.qcow2" "$DISK"
   ( umask 077; cat > "$DIR/user-data" <<EOF
 #cloud-config
@@ -317,6 +318,9 @@ wait_vm() {
 }
 reboot_vm() { vm 'sudo systemctl reboot' >/dev/null 2>&1 || true; sleep 20; wait_vm; }
 
+# VMs set up before base_setup installed systemd-pam get it on their next run.
+ensure_systemd_pam() { vm 'rpm -q systemd-pam' >/dev/null 2>&1 || vmsh <<< 'dnf -y -q install systemd-pam'; }
+
 base_setup() {
   log "Preparing the VM (updates, display support, automatic updates)"
   if [ "$OS" = rhel ]; then
@@ -334,7 +338,9 @@ base_setup() {
 set -e
 grep -q '^install_weak_deps' /etc/dnf/dnf.conf || echo 'install_weak_deps=False' >> /etc/dnf/dnf.conf
 dnf -y -q upgrade
-dnf -y -q install waypipe google-noto-sans-fonts mesa-libEGL mesa-dri-drivers glibc-langpack-en "$1"
+# systemd-pam: SSH logins get a runtime directory (XDG_RUNTIME_DIR), which waypipe's server needs
+# when an older waypipe on the desktop (RHEL's 0.8) starts it. Fedora leaves it out of minimal installs.
+dnf -y -q install waypipe systemd-pam google-noto-sans-fonts mesa-libEGL mesa-dri-drivers glibc-langpack-en "$1"
 printf '[commands]\nupgrade_type = default\ndownload_updates = yes\napply_updates = yes\nreboot = when-needed\n' > /etc/dnf/automatic.conf
 systemctl enable "$2" >/dev/null
 id browser >/dev/null 2>&1 || useradd -c 'Browser (no admin rights)' browser
@@ -898,6 +904,7 @@ main() {
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
+  ensure_systemd_pam
   setup_netguard
   setup_updates
   warn_mixing

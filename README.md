@@ -17,7 +17,7 @@ The browser and anything it installs stay inside the VM: root services, kernel h
 
 ## Quick start
 
-You need a Fedora desktop running Wayland, with KVM, 4 GB of free memory and 5 GB of free disk space.
+You need a Fedora or RHEL 10 desktop running Wayland, with KVM, 4 GB of free memory and 5 GB of free disk space. On RHEL, every package comes from the standard BaseOS and AppStream repositories.
 
 1. Install the packages and get the script:
 
@@ -104,7 +104,7 @@ The script registers the VM with the key.
 - **Admin shell:** `ssh -F none -i ~/.local/share/vm-browser/<vm>/id_ed25519 -o UserKnownHostsFile=~/.local/share/vm-browser/<vm>/known_hosts -p <port> admin@127.0.0.1` (the port is in `~/.local/share/vm-browser/<vm>/port`).
 - **Remove a VM:**
   ```bash
-  virsh -c qemu:///session destroy <vm>; virsh -c qemu:///session undefine <vm> --remove-all-storage
+  virsh -c qemu:///session destroy <vm> 2>/dev/null; virsh -c qemu:///session undefine <vm>
   rm -rf ~/.local/share/vm-browser/<vm> ~/.local/bin/vmb-<vm>-* ~/.local/share/applications/vmb-<vm>-*.desktop
   ```
 
@@ -149,7 +149,7 @@ your desktop (Wayland)                             VM (libvirt user session)
 
 ## Notes and limitations
 
-- **Windows and the clipboard:** the browser's windows reach your desktop through waypipe, as an ordinary Wayland client. While one of them has focus it can read your clipboard, including a password you've just copied, and it can draw any window, so a compromised browser could imitate a login or system dialog. Launchers ask for a security context (`waypipe --secctx vm-browser.<vm>`), so compositors that support it, such as Sway and Hyprland, can identify these windows and withhold privileged protocols: screen capture, virtual keyboards and clipboard managers. Each launch first checks, on your desktop and without asking the VM, whether the compositor offers the protocol. GNOME (checked on GNOME 51) doesn't, so launchers there run without it. GNOME doesn't give those privileged protocols to ordinary windows either, which leaves the clipboard and look-alike windows.
+- **Windows and the clipboard:** the browser's windows reach your desktop through waypipe, as an ordinary Wayland client. While one of them has focus it can read your clipboard, including a password you've just copied, and it can draw any window, so a compromised browser could imitate a login or system dialog. Launchers ask for a security context (`waypipe --secctx vm-browser.<vm>`), so compositors that support it, such as Sway and Hyprland, can identify these windows and withhold privileged protocols: screen capture, virtual keyboards and clipboard managers. Each launch first checks, on your desktop and without asking the VM, whether the compositor offers the protocol. GNOME (checked on GNOME 51) doesn't, so launchers there run without it. RHEL's waypipe (0.8) has no `--secctx` at all, so on RHEL launchers always run without it. GNOME doesn't give those privileged protocols to ordinary windows either, which leaves the clipboard and look-alike windows.
 - **Images and RPMs you supply aren't verified by the script:** `--image` files (all RHEL images, and Fedora ISOs) and `--rpm` packages are used as they are. Check them first, for example against the vendor's published SHA-256 checksum (`sha256sum FILE`) or with `rpm -K FILE` for an RPM signed with a key you have imported.
 - **Fedora image downloads** are used only if the release's `CHECKSUM` file is signed by that release's key, and only the signed part of the file is read. The key fingerprints for Fedora 42–47 are pinned in the script (`FEDORA_KEYS`). For any other release, the script stops: pass `--image` with an image you've verified, or add the release's key.
 - **Prisma Access Browser** installs a root service that loads eBPF hooks to protect the browser's processes. If the kernel's security-module list lacks `bpf`, its installer rewrites the boot command line in a way that drops SELinux. The script checks for `bpf` first and refuses to continue without it. Current Fedora and RHEL kernels include it.

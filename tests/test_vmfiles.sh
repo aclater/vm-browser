@@ -12,6 +12,14 @@ check "cloud images: cloud-init gets the pinned host key, and the user-data file
     grep -q "^  ed25519_private: |$" "$T/ud-out" && grep -q "^    -----BEGIN OPENSSH PRIVATE KEY-----$" "$T/ud-out" \
       && grep -qx "  ed25519_public: $(cut -d" " -f1,2 "$HKEYF.pub")" "$T/ud-out" && [ ! -e "$DIR/user-data" ]'
 
+check "cloud images: a read-only image gives a disk the VM can write, readable only by you" \
+  bash -c '
+    source ./vm-browser.sh
+    OS=fedora VER=44 NAME=ro-test DIR=$T/ro-dir MEM=4 CPUS=4 DISK=12G PORT=2299 IMAGE=$T/ro.qcow2 DOWNLOADED=0
+    rm -rf "$DIR"; mkdir -p "$DIR"; echo image > "$IMAGE"; chmod 444 "$IMAGE"; HKEYF=$DIR/hostkey; ssh-keygen -q -t ed25519 -N "" -C test -f "$HKEYF"
+    qemu-img() { [ -w "$DIR/disk.qcow2" ]; }; virsh() { :; }; make_iso() { : > "$1"; }
+    install_from_cloud_image "ssh-ed25519 AAAATEST admin" >/dev/null && [ "$(stat -c %a "$DIR/disk.qcow2")" = 600 ]'
+
 # fetch_icon with a stubbed VM that serves local files.
 icon_ok() {
   rm -rf "$T/ih"; mkdir -p "$T/ih"
@@ -42,3 +50,11 @@ check "an --rpm is copied into a private folder made in the VM, not a fixed path
   bash -c 'rpm_install >/dev/null && grep -qx admin@127.0.0.1:/var/tmp/vm-browser.Ab12/browser.rpm "$T/rpm-scp" && grep -qx /var/tmp/vm-browser.Ab12 "$T/rpm-args" && grep -q "admin 700" "$T/rpm-script" && ! grep -q vm-browser.rpm vm-browser.sh'
 fails "a folder name from the VM with shell characters is refused" \
   bash -c 'VM_TMP="/tmp/x;id" rpm_install'
+
+# ensure_systemd_pam with a stubbed VM: installs the package only where it's missing.
+check "a VM without systemd-pam gets it on the next run" \
+  bash -c 'source ./vm-browser.sh; vm() { return 1; }; vmsh() { cat > "$T/pam-script"; }; rm -f "$T/pam-script"
+    ensure_systemd_pam && grep -qx "dnf -y -q install systemd-pam" "$T/pam-script"'
+check "a VM that has systemd-pam is left alone" \
+  bash -c 'source ./vm-browser.sh; vm() { return 0; }; vmsh() { echo called > "$T/pam-called"; }; rm -f "$T/pam-called"
+    ensure_systemd_pam && [ ! -e "$T/pam-called" ]'

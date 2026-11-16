@@ -47,6 +47,10 @@ eval "$(grep -E '^(VM|SSH)=' "$L")"
 [ "$("${SSH[@]}" whoami)" = browser ] || fail "launcher does not log in as browser"
 "${SSH[@]}" 'sudo -n true' 2>/dev/null && fail "browser user has sudo"
 pass "launcher logs in as the unprivileged browser user"
+# Waypipe's server needs a runtime directory when RHEL's waypipe 0.8 on the desktop starts it.
+# shellcheck disable=SC2016  # expanded in the VM
+[ -n "$("${SSH[@]}" 'echo "$XDG_RUNTIME_DIR"')" ] || fail "the browser user's SSH sessions get no XDG_RUNTIME_DIR"
+pass "the browser user's SSH sessions get a runtime directory"
 "${SSH[@]}" 'firefox --version' | grep -q 'Mozilla Firefox' || fail "firefox does not run"
 pass "firefox runs: $("${SSH[@]}" 'firefox --version')"
 grep -q -- '-F none' "$L" || fail "launcher ssh reads the desktop's ssh_config"

@@ -2,6 +2,19 @@
 
 What was tested, where, and the result. Every pull request that changes the script runs ShellCheck, the unit checks in `tests/run.sh` (no VM needed) and the end-to-end test `tests/e2e.sh`, which builds a real Fedora VM on GitHub's runner. The end-to-end test also runs weekly. Running the checks yourself is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## RHEL 10 desktop, tested 2026-11-16
+
+A RHEL 10.2 VM (KVM, registered, BaseOS and AppStream only) stood in for the desktop: libvirt 12.5, passt, xorriso 1.5.6, waypipe 0.8.6, and GNOME's mutter 49 running headless as the compositor. The quick start's `dnf install` line installed everything without EPEL.
+
+| Scenario | Result |
+|---|---|
+| `tests/e2e.sh`, Fedora 44 cloud image (downloaded and verified): all checks, including the hostile `~/.ssh/config`, `--lan`, disposable mode, `--update` and `--persistent` | pass (17 checks) |
+| `tests/e2e.sh`, RHEL 10.2 KVM image with an activation key: all checks, including the activation key found nowhere in the VM | pass (17 checks) |
+| Fedora 45 netinstall ISO (`--version 45`): kernel and initrd read from the ISO with xorriso, installed through the metalink | pass |
+| Firefox opened through the launcher on mutter: it ran with the forwarded Wayland display for over 6 minutes; closing it ended the launcher and shut the VM down | pass |
+
+RHEL's waypipe 0.8 starts the VM's waypipe 0.11 only if the browser user's SSH sessions have `XDG_RUNTIME_DIR`, which needs `systemd-pam` in the guest; guests install it, and `tests/e2e.sh` checks for it. RHEL 9 desktops have the same packages (checked against CentOS Stream 9) but weren't run.
+
 ## Disposable mode, tested 2026-11-14
 
 On GitHub's runner (Fedora 44 container with KVM), `tests/e2e.sh` makes the e2e VM disposable and checks:
