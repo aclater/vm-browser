@@ -4,7 +4,9 @@ What was tested, where, and the result. Every pull request that changes the scri
 
 ## Agent guidance, tested 2026-11-16
 
-The two commands in AGENTS.md are the `shellcheck` and `tests` jobs of the `ci` workflow (Fedora 44 container), which passed on the pull request that added the file. The checks in `tests/test_agentfiles.sh` were also fed a zero-width character and an `@` import, and refused both.
+The two commands in AGENTS.md are the `shellcheck` and `tests` jobs of the `ci` workflow (Fedora 44 container), which passed on the pull request that added the file.
+
+`tests/test_agentfiles.sh` has 37 unit checks. They feed the agent-file check hostile copies and it refuses each: a zero-width character, a right-to-left override, an escape sequence, a carriage return, an HTML comment, five forms of `@` import, a file over 60 lines, extra text in CLAUDE.md, CLAUDE.md as a symlink, and ten other agent files (`CLAUDE.local.md`, nested `CLAUDE.md` and `AGENTS.md`, `.mcp.json`, and settings, rules and commands under `.claude/`, including `settings.local.json`), each both in a plain directory and tracked in a git checkout. Untracked local settings in a git checkout pass.
 
 ## RHEL 10 desktop, tested 2026-11-16
 

@@ -1,6 +1,7 @@
-# Files that run in CI or are read as instructions by coding agents.
-/.github/   @aclater
-/AGENTS.md  @aclater
-/CLAUDE.md  @aclater
-/.claude/   @aclater
-/.mcp.json  @aclater
+# Files that run in CI or are read as instructions by coding agents, at any depth.
+/.github/        @aclater
+AGENTS.md        @aclater
+CLAUDE.md        @aclater
+CLAUDE.local.md  @aclater
+.claude/         @aclater
+.mcp.json        @aclater

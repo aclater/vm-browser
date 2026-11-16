@@ -37,6 +37,6 @@ that change the script or the tests.
   contents: read` by default. Base images are Fedora or UBI.
 - Vulnerability details stay out of issues, pull requests and commit messages: see
   [SECURITY.md](SECURITY.md).
-- `AGENTS.md`, `CLAUDE.md`, `.claude/` and `.mcp.json` are reviewed like workflows. The two
-  Markdown files are short plain ASCII without HTML comments; the repository ships no agent
-  settings, hooks or MCP configuration.
+- This file and `CLAUDE.md` are reviewed like workflows and are the only agent files here:
+  short printable ASCII, no HTML comments, no imports. The repository ships no other agent
+  instructions, settings, hooks or MCP configuration; `tests/run.sh` checks all of this.
