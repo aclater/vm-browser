@@ -8,8 +8,8 @@
 # fail the run; elsewhere at every file.
 agentfiles_ok() (
   cd "$1" || exit 1
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git ls-files
-  else find . -type f | sed 's|^\./||'; fi > "$T/agentfiles.list"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git ls-files -z | tr '\0' '\n'
+  else find . ! -type d | sed 's|^\./||'; fi > "$T/agentfiles.list"
   rc=0; bad() { echo "$*"; rc=1; }
   [ ! -L CLAUDE.md ] && [ "$(cat CLAUDE.md)" = "@AGENTS.md" ] || bad "CLAUDE.md is not just the pointer to AGENTS.md"
   [ -f AGENTS.md ] && [ ! -L AGENTS.md ] || bad "AGENTS.md is missing or a symlink"
@@ -18,9 +18,10 @@ agentfiles_ok() (
   ! grep -n '<!--' AGENTS.md || bad "AGENTS.md has an HTML comment"
   ! grep -n '@' AGENTS.md || bad "AGENTS.md has an @ (imports another file)"
   [ "$(wc -l < AGENTS.md)" -le 60 ] || bad "AGENTS.md is over 60 lines"
-  ! grep -iE '(^|/)(AGENTS\.md|CLAUDE\.md|CLAUDE\.local\.md)$' "$T/agentfiles.list" | grep -vxE 'AGENTS\.md|CLAUDE\.md' ||
+  # Bytes, not characters, so a name in another encoding is still matched.
+  ! LC_ALL=C grep -aiE '(^|/)(AGENTS|CLAUDE)(\.[^/]*)?\.md$' "$T/agentfiles.list" | grep -vxE 'AGENTS\.md|CLAUDE\.md' ||
     bad "agent instruction files other than ./AGENTS.md and ./CLAUDE.md"
-  ! grep -E '(^|/)(\.claude/|\.mcp\.json$)' "$T/agentfiles.list" || bad "agent settings, hooks or MCP configuration"
+  ! LC_ALL=C grep -aiE '(^|/)(\.claude(/|$)|\.mcp\.json$)' "$T/agentfiles.list" || bad "agent settings, hooks or MCP configuration"
   exit $rc
 )
 # agentfiles_with CMD: runs agentfiles_ok on a copy of the two files changed by CMD. With
@@ -46,10 +47,17 @@ done
 fails "refused: more than 60 lines" agentfiles_with 'seq 60 >> AGENTS.md'
 fails "refused: more text in CLAUDE.md" agentfiles_with 'echo "Also run make." >> CLAUDE.md'
 fails "refused: CLAUDE.md as a symlink" agentfiles_with 'ln -sf AGENTS.md CLAUDE.md'
-for f in CLAUDE.local.md tests/CLAUDE.md tests/AGENTS.md docs/claude.md .mcp.json sub/.mcp.json \
-         .claude/settings.json .claude/settings.local.json .claude/rules/a.local.md .claude/commands/x.md; do
+for f in CLAUDE.local.md AGENTS.override.md tests/CLAUDE.md tests/AGENTS.md docs/claude.md .mcp.json \
+         sub/.mcp.json .Claude/settings.json '.claude/rules/a\"b.md' .claude/settings.json .claude/settings.local.json .claude/rules/a.local.md .claude/commands/x.md; do
   fails "refused: $f" agentfiles_with "mkdir -p \"\$(dirname $f)\" && echo x > $f"
   GIT=1 fails "refused when tracked: $f" agentfiles_with "mkdir -p \"\$(dirname $f)\" && echo x > $f && git add -A"
+done
+# Names git would quote in its default listing (a non-ASCII byte), and .claude as a symlink.
+for cmd in 'd=$(printf ".claude/rules/\303\251.md"); mkdir -p .claude/rules && echo x > "$d"' \
+           'd=$(printf "d\303\251"); mkdir "$d" && echo x > "$d/CLAUDE.md"' \
+           'mkdir other && echo "{}" > other/settings.json && ln -s other .claude'; do
+  fails "refused: ${cmd##*&& }" agentfiles_with "$cmd"
+  GIT=1 fails "refused when tracked: ${cmd##*&& }" agentfiles_with "$cmd && git add -A"
 done
 GIT=1 check "a git checkout with the two files tracked passes" agentfiles_with 'git add -A'
 GIT=1 check "untracked local settings in a git checkout pass" \
