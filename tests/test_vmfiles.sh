@@ -51,10 +51,12 @@ check "an --rpm is copied into a private folder made in the VM, not a fixed path
 fails "a folder name from the VM with shell characters is refused" \
   bash -c 'VM_TMP="/tmp/x;id" rpm_install'
 
-# ensure_systemd_pam with a stubbed VM: installs the package only where it's missing.
-check "a VM without systemd-pam gets it on the next run" \
+# ensure_guest_packages with a stubbed VM: installs the packages only where one is missing.
+check "a VM missing a base package (systemd-pam, libglvnd-gles) gets them on the next run" \
   bash -c 'source ./vm-browser.sh; vm() { return 1; }; vmsh() { cat > "$T/pam-script"; }; rm -f "$T/pam-script"
-    ensure_systemd_pam && grep -qx "dnf -y -q install systemd-pam" "$T/pam-script"'
-check "a VM that has systemd-pam is left alone" \
+    ensure_guest_packages && grep -qx "dnf -y -q install systemd-pam libglvnd-gles" "$T/pam-script"'
+check "a VM that has them is left alone" \
   bash -c 'source ./vm-browser.sh; vm() { return 0; }; vmsh() { echo called > "$T/pam-called"; }; rm -f "$T/pam-called"
-    ensure_systemd_pam && [ ! -e "$T/pam-called" ]'
+    ensure_guest_packages && [ ! -e "$T/pam-called" ]'
+check "new VMs get libglvnd-gles in their base setup (the file chooser aborts the browser without it)" \
+  bash -c 'grep -E "^dnf -y -q install waypipe" vm-browser.sh | grep -qw libglvnd-gles'

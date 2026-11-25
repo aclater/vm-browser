@@ -318,8 +318,11 @@ wait_vm() {
 }
 reboot_vm() { vm 'sudo systemctl reboot' >/dev/null 2>&1 || true; sleep 20; wait_vm; }
 
-# VMs set up before base_setup installed systemd-pam get it on their next run.
-ensure_systemd_pam() { vm 'rpm -q systemd-pam' >/dev/null 2>&1 || vmsh <<< 'dnf -y -q install systemd-pam'; }
+# VMs set up before base_setup installed these packages get them on their next run.
+# systemd-pam: see base_setup. libglvnd-gles: without it the browser's file chooser (GTK 4, no
+# portal in the VM) aborts the whole browser when it opens, because GTK needs libGLESv2.
+GUEST_PKGS="systemd-pam libglvnd-gles"
+ensure_guest_packages() { vm "rpm -q $GUEST_PKGS" >/dev/null 2>&1 || vmsh <<< "dnf -y -q install $GUEST_PKGS"; }
 
 base_setup() {
   log "Preparing the VM (updates, display support, automatic updates)"
@@ -340,7 +343,8 @@ grep -q '^install_weak_deps' /etc/dnf/dnf.conf || echo 'install_weak_deps=False'
 dnf -y -q upgrade
 # systemd-pam: SSH logins get a runtime directory (XDG_RUNTIME_DIR), which waypipe's server needs
 # when an older waypipe on the desktop (RHEL's 0.8) starts it. Fedora leaves it out of minimal installs.
-dnf -y -q install waypipe systemd-pam google-noto-sans-fonts mesa-libEGL mesa-dri-drivers glibc-langpack-en "$1"
+# libglvnd-gles: the browser's file chooser needs libGLESv2 (see ensure_guest_packages).
+dnf -y -q install waypipe systemd-pam google-noto-sans-fonts libglvnd-gles mesa-libEGL mesa-dri-drivers glibc-langpack-en "$1"
 printf '[commands]\nupgrade_type = default\ndownload_updates = yes\napply_updates = yes\nreboot = when-needed\n' > /etc/dnf/automatic.conf
 systemctl enable "$2" >/dev/null
 id browser >/dev/null 2>&1 || useradd -c 'Browser (no admin rights)' browser
@@ -778,7 +782,15 @@ for _ in $(seq 1 60); do
 done
 [ -n "$up" ] || { rm -f "$RUN/session.$$"; echo "vm-browser: VM $VM is not reachable, or its network guard isn't active" >&2; exit 1; }
 # ssh joins its arguments into one command line for the VM's shell: quote each one (URLs).
-CMD=$EXE; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
+# The browser starts through a short shell script that first tells the guest user's systemd and
+# D-Bus which display this connection has. Without it the portal's GTK backend, which they start
+# and not waypipe's server, has no display, exits at once, and the file chooser never appears.
+# Each connection has its own socket name, so every start sets it again (a stale name from an
+# earlier session would point at a dead socket), clears a backend that failed and restarts one
+# still running, so it connects to this display. Failures are ignored: guests without a portal
+# have nothing to set up. One line, so that any login shell of the guest user can run it.
+PREP='systemctl --user import-environment WAYLAND_DISPLAY >/dev/null 2>&1; busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus UpdateActivationEnvironment "a{ss}" 1 WAYLAND_DISPLAY "$WAYLAND_DISPLAY" >/dev/null 2>&1; systemctl --user reset-failed "xdg-desktop-portal*.service" >/dev/null 2>&1; systemctl --user try-restart xdg-desktop-portal-gtk.service >/dev/null 2>&1; exec "$@"'
+CMD="sh -c $(printf %q "$PREP") sh $EXE"; [ $# -eq 0 ] || CMD+=$(printf ' %q' "$@")   # no arguments: no empty one either
 # --secctx marks the VM's windows through the wp_security_context_v1 protocol, so compositors
 # that support it (Sway, Hyprland, ...) can tell them apart and withhold privileged protocols.
 # GNOME doesn't offer it, and waypipe --secctx stops at once there. Whether it is offered is
@@ -794,6 +806,14 @@ for i in $(seq 1 60); do   # up to 3 s; on GNOME it fails within milliseconds
 done
 kill "$pp" 2>/dev/null; wait "$pp" 2>/dev/null
 waypipe "${SECCTX[@]}" --no-gpu "${SSH[@]}" "$CMD" 9>&-; rc=$?
+# A browser that ends with an error (a crash, not a normal close) is reported once, so it doesn't
+# look like a silent shutdown. 255 is ssh's own failure: the VM could not be reached.
+if [ $rc -ne 0 ]; then
+  if [ $rc -eq 255 ]; then t="Could not reach VM $VM" m="The connection to the VM failed (ssh exit 255)."
+  else t="Browser in VM $VM ended abnormally" m="Exit code $rc. Details: ssh to the VM, then: sudo coredumpctl list; sudo journalctl -b"; fi
+  echo "vm-browser: $t ($m)" >&2
+  command -v notify-send >/dev/null && notify-send -a vm-browser "$t" "$m" 2>/dev/null || true
+fi
 # The last window closed: stop the VM, so it isn't running, online, while nothing uses it.
 # An automatic update that is running in a persistent VM finishes first (a disposable VM loses
 # it anyway). VMB_KEEP_RUNNING=1 skips this.
@@ -904,7 +924,7 @@ main() {
   load_port; wait_vm
   vm 'test -f /var/lib/vm-browser-base' 2>/dev/null || base_setup
   ensure_browser_key
-  ensure_systemd_pam
+  ensure_guest_packages
   setup_netguard
   setup_updates
   warn_mixing

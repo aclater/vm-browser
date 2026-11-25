@@ -2,6 +2,21 @@
 
 What was tested, where, and the result. Every pull request that changes the script runs ShellCheck, the unit checks in `tests/run.sh` (no VM needed) and the end-to-end test `tests/e2e.sh`, which builds a real Fedora VM on GitHub's runner. The end-to-end test also runs weekly. Running the checks yourself is covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## File chooser in the VM, tested 2026-11-25
+
+A Fedora 44 guest built by `vm-browser.sh` (weak dependencies off), Chromium 158, shown through waypipe on GNOME's mutter running headless on a Fedora 45 host. RHEL 10 and Prisma Access Browser were not run.
+
+| Scenario | Result |
+|---|---|
+| No portal in the guest, no `libglvnd-gles`: click a file input | the browser aborts (SIGABRT in libepoxy, from GTK 4's own chooser) |
+| Same, after installing `libglvnd-gles` | the "Open File" window appears; browser stays up |
+| Existing VM without the package, `vm-browser.sh --name VM chromium` | the package is installed |
+| Portal and its GTK backend installed, old launcher | no window; the backend is skipped for want of `WAYLAND_DISPLAY` |
+| Same, new launcher | the backend starts and its "Open File" window appears |
+| A second session after the first ended (new socket name) | the backend is restarted on the new display and its window appears |
+
+Selecting a file in the chooser was not driven. The owner's own VM (RHEL 10.3, hand-built, not made by this script) showed the same missing-display failure, and the dialog appeared after setting `WAYLAND_DISPLAY` there by hand.
+
 ## Agent guidance, tested 2026-11-16
 
 The two commands in AGENTS.md are the `shellcheck` and `tests` jobs of the `ci` workflow (Fedora 44 container), which passed on the pull request that added the file.

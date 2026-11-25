@@ -33,10 +33,29 @@ L='$T/home/.local/bin/vmb-testvm-testpkg'
 D='$T/home/.local/share/applications/vmb-testvm-testpkg.desktop'
 
 # The guest's shell parses the command line ssh sends: it must give back the same arguments.
+# The remote command is a short script that sets up the display for the guest's portal, then runs
+# the browser: sh -c SCRIPT sh BROWSER ARGS...; the guest's shell must give back the same arguments.
 check "the launcher runs the command in the VM with its arguments quoted (#7)" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=\$(id);c' \"two words\" && cmd=\$(grep '^/usr/bin/firefox' \$T/calls) && eval \"set -- \$cmd\" && [ \$# = 3 ] && [ \"\$2\" = 'https://example.test/?a=1&b=\$(id);c' ] && [ \"\$3\" = 'two words' ]"
-check "started with no arguments (from the menu), the VM gets the command alone, not an empty argument" \
-  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && grep -qx /usr/bin/firefox \$T/calls"
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L 'https://example.test/?a=1&b=\$(id);c' \"two words\" && cmd=\$(grep '^sh -c ' \$T/calls) && eval \"set -- \$cmd\" && [ \$# = 7 ] && [ \"\$5\" = /usr/bin/firefox ] && [ \"\$6\" = 'https://example.test/?a=1&b=\$(id);c' ] && [ \"\$7\" = 'two words' ]"
+check "started with no arguments (from the menu), the VM gets the browser alone, not an empty argument" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && cmd=\$(grep '^sh -c ' \$T/calls) && eval \"set -- \$cmd\" && [ \$# = 5 ] && [ \"\$5\" = /usr/bin/firefox ]"
+# The script runs as the guest's shell would run it, with stubs for systemctl and busctl.
+prep_run() {
+  launcher_for /usr/bin/firefox; rm -f "$T/calls"; "$T/home/.local/bin/vmb-testvm-testpkg" 'two words' 2>/dev/null
+  local cmd; cmd=$(grep '^sh -c ' "$T/calls"); [[ $cmd != *"\$'"* ]] || return 1   # no bash-only $'...' quoting
+  eval "set -- $cmd"
+  mkdir -p "$T/gstubs"; rm -f "$T/gcalls"
+  for c in systemctl busctl; do printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >> "%s/gcalls"\n' "$c" "$T" > "$T/gstubs/$c"; chmod +x "$T/gstubs/$c"; done
+  printf '#!/bin/bash\nprintf "ran %%s|%%s\\n" "$1" "$2" >> "%s/gcalls"\n' "$T" > "$T/gstubs/browser"; chmod +x "$T/gstubs/browser"
+  PATH="$T/gstubs:$PATH" WAYLAND_DISPLAY=wayland-abc123 sh -c "$3" sh "$T/gstubs/browser" "two words" "x"
+  grep -Fqx 'systemctl --user import-environment WAYLAND_DISPLAY' "$T/gcalls" \
+    && grep -q 'busctl --user call org.freedesktop.DBus .* UpdateActivationEnvironment a{ss} 1 WAYLAND_DISPLAY wayland-abc123' "$T/gcalls" \
+    && grep -Fqx 'systemctl --user reset-failed xdg-desktop-portal*.service' "$T/gcalls" \
+    && grep -Fqx 'systemctl --user try-restart xdg-desktop-portal-gtk.service' "$T/gcalls" \
+    && [ "$(tail -1 "$T/gcalls")" = "ran two words|x" ]
+}
+export -f prep_run
+check "the browser starts after the guest's systemd and D-Bus learn this connection's display (file chooser portal)" prep_run
 check "the launcher logs in with the browser key, not the admin key (#7)" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && $L && grep -qx \$T/bkey \$T/calls && ! grep -qx \$T/key \$T/calls && grep -qx StrictHostKeyChecking=yes \$T/calls"
 for evil in '/usr/bin/firefox;touch${IFS}/tmp/pwned' '$(touch /tmp/pwned)' '`touch /tmp/pwned`' \
@@ -93,6 +112,10 @@ check "a VM that prints waypipe's no-secctx error and fails gets no second run w
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! VM_SAYS='Error: \"src/secctx.rs:56: Compositor did not provide wp_security_context_manager_v1 global\"' BROWSER_EXIT=1 $L 2>/dev/null && [ \$(runs | wc -l) = 1 ] && runs | grep -q -- --secctx"
 check "a browser that exits with an error is not started a second time" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && ! BROWSER_EXIT=3 $L && [ \$(runs | wc -l) = 1 ]"
+check "a browser that crashes is reported once, with its exit code; a normal close says nothing" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/desktop-calls && ! BROWSER_EXIT=134 $L 2>/dev/null && [ \$(grep -c abnormally \$T/desktop-calls) = 1 ] && grep -q 'Exit code 134' \$T/desktop-calls && rm -f \$T/desktop-calls && $L && [ ! -e \$T/desktop-calls ]"
+check "an ssh failure (255) is reported as an unreachable VM, not as a browser crash" \
+  bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/desktop-calls && ! BROWSER_EXIT=255 $L 2>/dev/null && grep -q 'Could not reach VM' \$T/desktop-calls && ! grep -q abnormally \$T/desktop-calls"
 check "the probe's local waypipe client is stopped" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls \$T/probe-pid && $L && [ -s \$T/probe-pid ] && ! kill -0 \$(cat \$T/probe-pid) 2>/dev/null"
 
@@ -122,3 +145,12 @@ check "a VM that ignores the shutdown is switched off after the wait" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && XDG_RUNTIME_DIR=\$T/run5 $L 2>/dev/null && grep -A1 -x virsh \$T/calls | grep -qx destroy"
 check "...but not while another launcher of the VM is open" \
   bash -c "launcher_for /usr/bin/firefox && rm -f \$T/calls && export XDG_RUNTIME_DIR=\$T/run6 && (BROWSER_SECONDS=4 $L 2>/dev/null &) && sleep 1 && $L 2>/dev/null && ! grep -qx destroy \$T/calls && ! grep -qx shutdown \$T/calls"
+
+desktop_isolated() {
+  local c
+  for c in notify-send zenity kdialog; do [ "$(command -v "$c")" = "$T/desktop-stubs/$c" ] || return 1; done
+  [ -z "${DBUS_SESSION_BUS_ADDRESS:-}${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+export -f desktop_isolated
+check "the desktop tools the checks can reach are the recording stubs, and no session bus or display is set" desktop_isolated
+
