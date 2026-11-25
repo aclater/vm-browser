@@ -23,6 +23,16 @@ run_check() {
 check() { run_check ok "$@"; }
 fails() { run_check fail "$@"; }
 
+# Nothing a check runs may reach the desktop: no session bus, no display, and stubs first in PATH
+# for the desktop tools the launchers call. Each stub records its arguments in $T/desktop-calls.
+unset DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY
+mkdir -p "$T/desktop-stubs"
+for c in notify-send zenity kdialog; do
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s" "$@" "--" >> "%s/desktop-calls"\nexit 1\n' "$c" "$T" > "$T/desktop-stubs/$c"
+  chmod +x "$T/desktop-stubs/$c"
+done
+export PATH="$T/desktop-stubs:$PATH"
+
 for t in tests/test_*.sh; do
   printf '\n# %s\n' "$t"
   # shellcheck source=/dev/null
